@@ -132,7 +132,7 @@ The LoRa channel is **advisory only**: if it is unavailable, the batman-adv data
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-- **Ver** (4 bits): Protocol version; current = `0x2` (v0.2 wire format with KEY_ID field; incompatible with v0.1)
+- **Ver** (4 bits): Protocol version; current = `0x3` (v0.3 wire format with BEACON Timestamp field; incompatible with v0.1/v0.2)
 - **Rsvd** (4 bits): Reserved, MUST be zero; allows future flag extension without a version bump
 - **Type** (8 bits): Frame type from table above
 - **Seq** (16 bits): Rolling sequence number for deduplication and anti-replay
@@ -155,6 +155,12 @@ BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, ne
   - **Rationale**: Ensures nonce uniqueness even if CSPRNG fails or resets on reboot; reboot counter prevents nonce reuse across power cycles
   - **Assumption**: `crypto/rand` must produce varying output (not constant). If CSPRNG completely fails (constant output), nonces repeat after `frame_seq` wraps (~65k frames). Entropy audit at startup (§5.5) detects this failure mode before first transmission.
   - **Storage**: Reboot counter persisted to `/var/lib/conspiracyd/reboot_counter` (atomic write-rename); survives firmware updates
+  - **Persistence failure handling** (v0.3.1 critical):
+    - At daemon init, test write permission to `/var/lib/conspiracyd/` by writing a canary file
+    - If reboot counter write fails during init or increment, daemon MUST NOT start LoRa subsystem
+    - Log CRITICAL: "Failed to persist reboot counter; LoRa disabled to prevent nonce reuse. Fix filesystem and restart."
+    - Continue in 802.11s-only mode (batman-adv operational, LoRa disabled) until filesystem issue resolved
+    - **Rationale**: Single boot with failed counter persistence compromises all subsequent BEACON transmissions; nonce reuse catastrophically breaks ChaCha20-Poly1305 confidentiality
 - Overhead: +16 bytes (Poly1305 authentication tag) + 12 bytes (nonce)
 
 **Plaintext payload structure (before encryption):**
@@ -169,15 +175,19 @@ BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, ne
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |  Lon (32-bit fixed-point)                                     |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|              Timestamp (32-bit Unix epoch seconds)            |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
 **Fixed-length padding scheme (v0.3 traffic analysis resistance):**
 - SSID field is **always 32 bytes** on-wire (padded with zeros if actual SSID is shorter)
 - SSID Length field indicates actual SSID length (1-32); receiver truncates padding after decryption
 - GPS fields (Lat/Lon) are always present (8 bytes total); filled with zeros if GPS disabled (Capabilities bit 7 = 0)
-- **Total plaintext size: 4 + 1 + 32 + 8 = 45 bytes** (fixed for all BEACONs)
+- **Timestamp** (4 bytes): Unix epoch seconds; used for PoW challenge freshness (§4.1); receiver validates `|now - Timestamp| < 300s` (5-minute tolerance)
+- **Total plaintext size: 4 + 1 + 32 + 8 + 4 = 49 bytes** (fixed for all BEACONs)
 - Rationale: Normalizes all BEACON ciphertexts to same length, preventing traffic analysis via frame length
 - Privacy improvement from v0.2: observers cannot infer SSID length or whether GPS is enabled
+- **Wire format compatibility (v0.3)**: Protocol version bumped from `0x2` to `0x3` due to BEACON payload size change (45→49 bytes). Nodes running v0.2 will reject v0.3 BEACONs (HMAC verification fails due to size mismatch). **Rolling upgrade**: Deploy v0.3 to ≥50% of nodes before enabling Timestamp validation; v0.3 nodes can parse v0.2 BEACONs (ignore missing Timestamp, skip PoW freshness check) during transition. After 24h, all nodes should be v0.3; enable strict Timestamp validation via config flag.
 
 **Encrypted frame structure (on-wire):**
 
@@ -186,7 +196,7 @@ BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, ne
 |                  Nonce (96 bits / 12 bytes)                   |
 |        (hybrid construction: HMAC of reboot/seq/rand)         |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|            Ciphertext (45 bytes fixed length)                 |
+|            Ciphertext (49 bytes fixed length)                 |
 |                   (encrypted payload above)                   |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |             Poly1305 Tag (128 bits / 16 bytes)                |
@@ -195,7 +205,7 @@ BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, ne
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-Total encrypted BEACON: 12-byte header + 12-byte nonce + 45-byte ciphertext + 16-byte tag + 12-byte HMAC = **97 bytes** (well within 222-byte LoRa limit; +9 bytes vs v0.2).
+Total encrypted BEACON: 12-byte header + 12-byte nonce + 49-byte ciphertext + 16-byte tag + 12-byte HMAC = **101 bytes** (well within 222-byte LoRa limit; +4 bytes vs v0.2 for Timestamp field; protocol version 0x3).
 
 **Security properties:**
 - Confidentiality: Only mesh members with `MESH_KEY` can decrypt
@@ -349,6 +359,11 @@ To prevent regulatory violations, the daemon implements a centralized duty-cycle
      - Nodes reject REKEY frames with `generation ≤ last_seen_generation` (prevents replay of old REKEY frames)
    - Nodes accept frames authenticated with old or new key during 24-hour transition period
    - After transition, old key expires; compromised devices using old key ejected
+   - **REKEY broadcast limitation** (v0.3.1 operational note):
+     - REKEY frames are broadcast encrypted with `OLD_KEY`; any node possessing `OLD_KEY` (including compromised nodes being ejected) can decrypt and learn `NEW_KEY`
+     - **This mechanism does NOT eject active compromised nodes**; it only ejects offline or inattentive attackers
+     - **Operational mitigation**: For surgical ejection, operators must: (1) physically isolate suspected nodes, (2) broadcast REKEY, (3) verify suspected nodes offline before restoring network access
+     - **Future enhancement**: v2.0 will implement per-node public keys (ECDH Curve25519) for asymmetric REKEY distribution, enabling true surgical ejection without physical isolation
    - New nodes provision latest key; key rotation is backward-compatible
    - **Anti-replay**: Replaying captured REKEY frame months later is prevented by generation check
 
@@ -392,9 +407,10 @@ New Device                    LoRa Channel              Existing Peer
    - **Challenge source**: Use both `BEACON.Seq` AND `BEACON.Timestamp` from the peer's most recent BEACON as the challenge
      - Including timestamp prevents precomputation attacks (challenge changes every 30-120s with new BEACON)
      - Attacker cannot precompute nonces for all possible Seq values because Timestamp is unpredictable
+     - **Validation**: Peer verifies `|current_time - BEACON.Timestamp| < 300s` (5-minute tolerance) before accepting PoW; reject stale challenges
    - **Cost**: ~65k hash attempts, ~10ms on ARM CPU, ~200µs on x86 (negligible for legitimate joins)
    - **Benefit**: Spamming 1000 JOIN_REQ requires ~10 seconds of CPU; precomputation cost is 16× higher (must recompute every BEACON interval)
-   - **Validation**: Peer verifies PoW using its own recent BEACON sequence numbers and timestamps (accepts last 10 BEACONs to handle timing); reject if invalid
+   - **Validation**: Peer verifies PoW using its own recent BEACON sequence numbers and timestamps (accepts last 10 BEACONs to handle timing); reject if invalid or timestamp stale
 
 4. **JOIN_ACK with Rate Limiting and BSSID (v0.3 optimized):** Peer enforces per-NodeID quotas before responding:
    - **Token bucket**: 3 JOIN_REQ per hour per NodeID, burst=1
@@ -663,6 +679,7 @@ The daemon is structured around a set of long-running goroutines communicating v
 | **Route table** (batman-adv OGM cache) | `sync.Mutex` | Max 10,000 originators | LRU by last-OGM-received; evict entries with seq# deviation >1000 |
 | **OGM rate limiter (with burst allowance)** | `sync.Map` of token buckets | Bounded by peer table size | Per-originator: 10 OGM/sec, burst=20 (normal); **During partition rejoin** (detect: peer count +50% within 10s): temporarily increase burst to 50 for 60s, then reset. Drop excess. |
 | **OGM rejoin coordinator** | `sync.Mutex` on global state | Single instance | **Staggered re-injection**: If churn rate >10 events/sec, add per-node random jitter (0-5s) before broadcasting first OGM to new partition; reduces convergence storm from 250k OGMs to ~50k over 30s window |
+| **Batman-adv peer limit** (v0.3.1 scale enforcement) | `sync.Mutex` on originator count | **Hard limit: 4,500 originators** (10% safety margin below 5k architectural limit) | When route table reaches 4,500 originators: (1) **Stop emitting OGMs entirely** (disable batman-adv OGM broadcast; node becomes passive relay), (2) Log WARNING: "Approaching batman-adv scale limit (4,500/5,000 peers). Plan federation migration.", (3) At 4,000 peers, log INFO with migration guidance: "Network has 4,000 nodes. Consider deploying second mesh island (see docs/federation.md).", (4) Expose `batman_originator_count` gauge; alert at >3,500 (75% capacity). **Routing impact**: Node continues forwarding batman-adv traffic and relaying OGMs from other originators, but does NOT advertise itself as a routing destination (effectively "client-only" mode). Existing routes to this node remain valid until TTL expires (~60s); new nodes cannot discover this node via OGM flooding. **Recovery**: If originator count drops below 4,200 (hysteresis), re-enable OGM emission. |
 | **Anti-replay windows** | `sync.Map` of bitmaps | 128-bit bitmap × active peers (~1 KB for 64 peers) | Evict NodeID entries after 10 min inactivity |
 | **JOIN_REQ quotas** | `sync.Map` of token buckets | Max 1024 entries (LRU) | Per-NodeID: 3 req/hour, burst=1; evict oldest on overflow |
 | **NodeID collision pins** (v0.3) | `sync.Map` of HMAC suffixes | Max 10,000 entries (peer table size) | Store `(NodeID, HMAC_suffix)` on first contact; 8 bytes/entry = 80 KB overhead. Clear on KEY_ID rotation. |
@@ -679,6 +696,8 @@ The daemon is structured around a set of long-running goroutines communicating v
 **Non-Blocking HintBus (F-RES-002):** Each HintConsumer gets a dedicated buffered channel (adaptive sizing in v0.3). Bus uses `select` with non-blocking send; slow consumers cannot block others.
 
 **batman-adv Netlink Optimization (v0.3 event-driven):** Route table updates via netlink multicast notifications (`RTNLGRP_BATMAN_ADV`) instead of periodic polling. Subscribe to routing table change events at startup; receive incremental updates with <100ms latency. Fallback to 5-second polling if multicast unsupported by kernel/library. Reduces staleness from 0-5s to <100ms during topology changes.
+
+**Netlink Socket Buffer Sizing (v0.3.1 OGM storm resilience):** Set `SO_RCVBUF=1MB` on batman-adv netlink socket at initialization (via `setsockopt`). Default 32 KB buffer holds ~16 route change events; 1 MB buffer holds ~4k events. During partition rejoin (8k events/sec), provides 500ms buffering vs 2ms, reducing overflow probability from ~80% to <1%. On `ENOBUFS` error (buffer overflow), trigger immediate full route table sync (query batman-adv via netlink dump) instead of waiting for 5-second polling fallback.
 
 Worker goroutines are started with `context.Context` propagation; shutdown is cooperative via `context.Cancel()`.
 
@@ -700,7 +719,13 @@ Before first LoRa transmission or nonce generation, daemon MUST verify CSPRNG en
    - If <128 bits available, log WARNING: "Low entropy detected; nonce generation may be predictable"
    - Require ≥128 bits before proceeding with any cryptographic operations
 
-3. **Automatic key rotation trigger on reboot detection**:
+3. **CSPRNG output validation** (v0.3.1 critical):
+   - After blocking read, generate two 32-byte samples from `crypto/rand.Read()` and compare
+   - If `bytes.Equal(sample1, sample2)`, log CRITICAL and abort: "CSPRNG failure: identical output detected; daemon cannot start safely"
+   - Probability of false positive: 2⁻²⁵⁶ (negligible); this detects broken CSPRNG implementations returning constant output
+   - **Continuous monitoring**: Every 1,000 nonce generations, re-sample and verify non-constant output; if constant detected, trigger emergency shutdown
+
+4. **Automatic key rotation trigger on reboot detection**:
    - Compare current uptime (`/proc/uptime`) vs last-known uptime from persistent storage
    - If reboot detected (uptime < last_uptime), initiate key rotation immediately to mitigate any nonce-reuse window
 
@@ -710,7 +735,7 @@ Before first LoRa transmission or nonce generation, daemon MUST verify CSPRNG en
    - Threshold: 10 consecutive errors within 30 seconds = radio declared failed
    - Error types considered fatal: `ENODEV`, `EIO`, `ECONNRESET` (device disconnected)
    - Transient errors (e.g., `EAGAIN`, `ETIMEDOUT`) do not increment counter
-   - **Exponential backoff on RX errors**: If `ReadFrom()` returns error, sleep for `min(2^consecutive_errors × 100ms, 10s)` before retry. Reset counter on successful read. Prevents CPU thrashing during error storms.
+   - **Exponential backoff on RX errors**: If `ReadFrom()` returns error, sleep for `min(2^consecutive_errors × 100ms, 2s)` before retry. Reset counter on successful read. Prevents CPU thrashing during error storms while maintaining JOIN_ACK responsiveness (v0.3.1: reduced cap from 10s to 2s).
 
 2. **Health check**: If no successful RX/TX in 5 minutes, attempt test transmission
    - Send low-priority PING frame; if TX fails, increment failure counter
