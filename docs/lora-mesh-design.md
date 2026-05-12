@@ -1,6 +1,6 @@
 # LoRa-Assisted Mesh Networking Platform — Technical Design Document
 
-> **Status:** Draft v0.2  
+> **Status:** Draft v0.3  
 > **Date:** 2026-05-12  
 > **Repository:** opd-ai/conspiracy  
 > **Language:** Go (≥ 1.22)
@@ -28,6 +28,8 @@ This document specifies a **zero-configuration, community-owned layer-2 mesh net
 Any in-range device running the daemon joins the mesh automatically: it listens for LoRa beacons, associates with the strongest peer, and enrolls into the `batman-adv` layer-2 fabric. The LoRa link carries only compact routing hints, neighbor summaries, and device-discovery beacons — never bulk payload — keeping duty-cycle well within regional limits. A clean `HintProvider`/`HintConsumer` interface allows future layer-3 overlays (cjdns, Yggdrasil, or custom protocols) to consume the same hint stream without modifying the core daemon. The design favors existing, permissively-licensed Go libraries, avoids libp2p and web frameworks, and is structured to scale across large geographic deployments with many nodes.
 
 **v0.2 Security and Resilience Enhancements:** This revision addresses critical security and scalability findings from design review, including: 64-bit HMAC authentication, RFC 6479 anti-replay windows, proof-of-work JOIN_REQ rate limiting, encrypted BEACON payloads, bounded peer tables with LRU eviction, global duty-cycle enforcement, OGM rate limiting, goroutine leak prevention, LoRa radio failure recovery, and key rotation protocol design.
+
+**v0.3 Production-Readiness and Scale Hardening:** This revision implements all P0-P3 findings from comprehensive design review, including: hybrid nonce construction with persistent reboot counter, entropy audit at startup, multi-frequency LoRa zoning for 10³+ nodes, explicit 5,000-node architectural limits with federation guidance, partition rejoin OGM storm mitigation, reduced ROUTE_HINT TTL with probabilistic forwarding, NodeID collision detection, 96-bit HMAC truncation, REKEY replay prevention, tiered peer storage, netlink multicast route updates, LoRa RX error backoff, PoW timestamp inclusion, fixed-length BEACON padding, JOIN_ACK BSSID inclusion, and adaptive HintBus consumer buffers.
 
 ---
 
