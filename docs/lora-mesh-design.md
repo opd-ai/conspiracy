@@ -305,9 +305,16 @@ To prevent regulatory violations, the daemon implements a centralized duty-cycle
 
 1. **Shared mesh key** (`MESH_KEY`, 256-bit): provisioned out-of-band (QR code, NFC tap, or manual entry). This is the same key used for 802.11s AMPE.
 
-2. **Per-frame HMAC-SHA256, truncated to 64 bits**: `HMAC-SHA256(MESH_KEY, header || payload)[0:8]`. A 64-bit truncated HMAC provides 2^64 (~18 quintillion) possible values, making brute-force attacks computationally infeasible while using only 8 bytes per frame (3.6% of 222-byte LoRa budget). This is a significant security upgrade from 32-bit truncation, which could be brute-forced within hours on modern hardware.
+2. **Per-frame HMAC-SHA256, truncated to 96 bits**: `HMAC-SHA256(MESH_KEY, header || payload)[0:12]`. A 96-bit truncated HMAC provides 2^96 security level (~79 octillion possible values), with 2^48 birthday attack resistance (~281 trillion attempts), making long-term brute-force attacks computationally infeasible while using only 12 bytes per frame (5.4% of 222-byte LoRa budget). This is a significant security upgrade from v0.2's 64-bit truncation.
 
-3. **Sequence number with RFC 6479-style anti-replay window** (16-bit rolling): Prevents replay attacks while accommodating out-of-order LoRa packet delivery (20-40% typical loss rate). Each node maintains:
+3. **NodeID collision detection and pinning** (v0.3): FNV-1a-32 NodeID hash creates 2^32 ID space with birthday collision probability at ~0.01% for 10³ nodes. To detect and mitigate collisions:
+   - **First-contact pinning**: On first HMAC-validated frame from a NodeID, store `(NodeID, HMAC_suffix)` where `HMAC_suffix = HMAC[8:12]` (last 4 bytes)
+   - **Collision detection**: If same NodeID seen with different HMAC_suffix, increment `node_id_collision_detected` metric and log WARNING with both HMAC suffixes
+   - **Collision handling**: During KEY_ID rotation (legitimate key change), HMAC_suffix changes are expected; clear pinning on KEY_ID transition
+   - **Storage**: Pinning map bounded to peer table size (10k entries × 8 bytes = 80 KB overhead)
+   - **Trade-off**: Reduces NodeID fluidity (nodes cannot easily change MAC without appearing as attacker), but prevents impersonation via collision exploitation
+
+4. **Sequence number with RFC 6479-style anti-replay window** (16-bit rolling): Prevents replay attacks while accommodating out-of-order LoRa packet delivery (20-40% typical loss rate). Each node maintains:
    - **Last accepted sequence** (`last_seq`) per NodeID
    - **128-bit replay bitmap** covering `[last_seq - 127, last_seq]` window
    - Acceptance rules:
@@ -319,15 +326,19 @@ To prevent regulatory violations, the daemon implements a centralized duty-cycle
    - NodeID entries evicted after 10 minutes of inactivity (bounded memory)
    - Bitmap overhead: ~16 bytes per active peer (~1 KB for 64 concurrent peers)
 
-4. **Key rotation support** (v1.1): To enable recovery from key compromise without network rebuild:
+5. **Key rotation with replay prevention** (v0.3): To enable recovery from key compromise without network rebuild:
    - Each key has 4-byte `KEY_ID = HMAC-SHA256(MESH_KEY, "key-id")[0:4]`
    - `KEY_ID` is present in the common header (§3.2) of all frame types, allowing receivers to select the correct key before HMAC verification
-   - Key rotation via encrypted LoRa `REKEY` frame: `ChaCha20Poly1305_Encrypt(OLD_KEY, NEW_KEY || NEW_KEY_ID || VALID_AFTER_TIMESTAMP)` with random nonce
+   - **REKEY frame structure**: `ChaCha20Poly1305_Encrypt(OLD_KEY, NEW_KEY || NEW_KEY_ID || VALID_AFTER_TIMESTAMP || REKEY_GENERATION)` with 12-byte random nonce
+     - `REKEY_GENERATION`: 64-bit monotonic counter (increments on each key rotation)
+     - Stored persistently in `/var/lib/conspiracyd/rekey_generation` (atomic write-rename)
+     - Nodes reject REKEY frames with `generation ≤ last_seen_generation` (prevents replay of old REKEY frames)
    - Nodes accept frames authenticated with old or new key during 24-hour transition period
    - After transition, old key expires; compromised devices using old key ejected
    - New nodes provision latest key; key rotation is backward-compatible
+   - **Anti-replay**: Replaying captured REKEY frame months later is prevented by generation check
 
-5. **No per-node public keys** in v1.0: Adding lightweight ECDH (Curve25519) session layer deferred to v2 as optional extension for deployments requiring per-node authentication.
+6. **No per-node public keys** in v1.0: Adding lightweight ECDH (Curve25519) session layer deferred to v2 as optional extension for deployments requiring per-node authentication.
 
 > **Note:** Sybil attacks cannot be fully prevented with a shared key alone. Rate limiting, proof-of-work, and resource quotas (§4.1, §5.4) provide practical Sybil resistance while preserving open-join. §4.3 discusses the trust model and its limits.
 
@@ -362,22 +373,29 @@ New Device                    LoRa Channel              Existing Peer
 
 2. **BEACON validation:** Validate HMAC and decrypt payload using `MESH_KEY`. Discard if authentication fails (wrong network or corrupted frame).
 
-3. **JOIN_REQ with Proof-of-Work:** New node sends `JOIN_REQ` to the peer with highest RSSI. To prevent JOIN_REQ floods (F-SEC-002), the request includes proof-of-work:
-   - **PoW requirement**: Find `nonce` such that `SHA256(NodeID || nonce || challenge)[0:2] == 0x0000` (16-bit difficulty)
-   - **Challenge source**: Use `BEACON.Seq` from the peer's most recent BEACON as the challenge (prevents precomputation, no clock dependency)
+3. **JOIN_REQ with Proof-of-Work (v0.3 hardened):** New node sends `JOIN_REQ` to the peer with highest RSSI. To prevent JOIN_REQ floods, the request includes proof-of-work:
+   - **PoW requirement**: Find `nonce` such that `SHA256(NodeID || nonce || BEACON.Seq || BEACON.Timestamp)[0:2] == 0x0000` (16-bit difficulty)
+   - **Challenge source**: Use both `BEACON.Seq` AND `BEACON.Timestamp` from the peer's most recent BEACON as the challenge
+     - Including timestamp prevents precomputation attacks (challenge changes every 30-120s with new BEACON)
+     - Attacker cannot precompute nonces for all possible Seq values because Timestamp is unpredictable
    - **Cost**: ~65k hash attempts, ~10ms on ARM CPU, ~200µs on x86 (negligible for legitimate joins)
-   - **Benefit**: Spamming 1000 JOIN_REQ requires ~10 seconds of CPU, making floods impractical
-   - **Validation**: Peer verifies PoW using its own recent BEACON sequence numbers (accepts last 10 BEACONs to handle timing); reject if invalid
+   - **Benefit**: Spamming 1000 JOIN_REQ requires ~10 seconds of CPU; precomputation cost is 16× higher (must recompute every BEACON interval)
+   - **Validation**: Peer verifies PoW using its own recent BEACON sequence numbers and timestamps (accepts last 10 BEACONs to handle timing); reject if invalid
 
-4. **JOIN_ACK with Rate Limiting:** Peer enforces per-NodeID quotas before responding:
+4. **JOIN_ACK with Rate Limiting and BSSID (v0.3 optimized):** Peer enforces per-NodeID quotas before responding:
    - **Token bucket**: 3 JOIN_REQ per hour per NodeID, burst=1
    - **Bounded cache**: Store quota state in LRU map (max 1024 entries, evict oldest on overflow)
    - **Silently drop** requests exceeding quota (no response → attacker gets no amplification)
-   - Peer responds with `JOIN_ACK` containing Wi-Fi SSID, BSSID, channel, and **network identifier** (`NetID` = HMAC-SHA256(`MESH_KEY`, `"netid"`)[:4])
+   - Peer responds with `JOIN_ACK` containing:
+     - Wi-Fi SSID (≤32 bytes)
+     - **BSSID** (6 bytes, MAC address of peer's mesh interface) — NEW in v0.3
+     - Channel (1 byte)
+     - **NetID** (4 bytes: HMAC-SHA256(`MESH_KEY`, `"netid"`)[:4])
    - `MESH_KEY` itself is **never transmitted over LoRa**; `NetID` confirms peer is on same network
    - New node, which already has `MESH_KEY` provisioned out-of-band, verifies `NetID` locally
+   - **BSSID inclusion benefit**: Eliminates need for nl80211 BSS scan (saves ~400ms join latency); node directly configures 802.11s interface with known BSSID
 
-5. **802.11s peering:** New node configures `wpa_supplicant` (or `hostapd` in mesh mode) with received parameters and initiates `AMPE` (Authenticated Mesh Peering Exchange) using `MESH_KEY` as the PMK seed.
+5. **802.11s peering:** New node configures `wpa_supplicant` (or `hostapd` in mesh mode) with received parameters (SSID, BSSID, channel) and initiates `AMPE` (Authenticated Mesh Peering Exchange) using `MESH_KEY` as the PMK seed. With BSSID provided, skip BSS scan step — total join latency reduced from ~600ms to <200ms.
 
 6. **batman-adv enrollment:** Daemon calls `batctl if add <mesh_iface>` via netlink. The kernel module begins flooding OGM packets; routing table converges within seconds.
 
