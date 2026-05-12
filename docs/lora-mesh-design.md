@@ -130,7 +130,7 @@ The LoRa channel is **advisory only**: if it is unavailable, the batman-adv data
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-- **Ver** (4 bits): Protocol version; current = `0x1`
+- **Ver** (4 bits): Protocol version; current = `0x2` (v0.2 wire format with KEY_ID field; incompatible with v0.1)
 - **Rsvd** (4 bits): Reserved, MUST be zero; allows future flag extension without a version bump
 - **Type** (8 bits): Frame type from table above
 - **Seq** (16 bits): Rolling sequence number for deduplication and anti-replay
@@ -146,8 +146,8 @@ BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, ne
 **Encryption:**
 - Algorithm: ChaCha20-Poly1305 (AEAD)
 - Key: `HKDF-SHA256(MESH_KEY, salt="beacon-v1", info="encryption", length=32)`
-- Nonce: 12 bytes = `NodeID (4) || Seq (2) || Timestamp_ms (6)` (unique per frame)
-- Overhead: +16 bytes (Poly1305 authentication tag)
+- Nonce: 12 bytes = 96-bit random value generated via `crypto/rand` per frame (stored in frame)
+- Overhead: +16 bytes (Poly1305 authentication tag) + 12 bytes (nonce)
 
 **Plaintext payload structure (before encryption):**
 
@@ -168,7 +168,7 @@ BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, ne
 ```
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                  Nonce (96 bits / 12 bytes)                   |
-|                         (NodeID + Seq + Timestamp)            |
+|                    (random, from crypto/rand)                 |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |            Ciphertext (variable, ≤40 bytes typical)           |
 |                   (encrypted payload above)                   |
@@ -185,7 +185,7 @@ Total encrypted BEACON: 12-byte header + 12-byte nonce + ~40-byte ciphertext + 1
 - Confidentiality: Only mesh members with `MESH_KEY` can decrypt
 - Authenticity: Poly1305 tag + HMAC-SHA256 provide double authentication
 - Privacy: GPS coordinates, SSID, capabilities hidden from non-members
-- Replay protection: Nonce includes sequence number (never reused)
+- Replay protection: Provided by RFC 6479 anti-replay window (§3.6), independent of AEAD nonce
 
 **Capabilities byte:**
 
@@ -218,7 +218,7 @@ Each ROUTE_HINT encodes up to **6 neighbor entries** (≈ 16 bytes each). TTL is
 - On receive: if `TTL > 3`, reject frame immediately (drop, log warning)
 - On forward: decrement `TTL` before forwarding; drop when `TTL == 0`
 - Forwarding rate limit: max 1 forwarded hint per 10 seconds per node (token bucket)
-- Deduplication: maintain Bloom filter (1 KB, 0.01% FP rate) of `(NodeID, Seq)` pairs seen in last 60s; don't re-forward duplicates
+- Deduplication: maintain Bloom filter of `(NodeID, Seq)` pairs seen in last 60s; don't re-forward duplicates. Filter sized for expected load (e.g., 4 KB for ~1000 insertions at ~1% FP rate); actual FP rate depends on traffic volume.
 
 ### 3.5 Duty-Cycle and Collision Avoidance
 
@@ -276,8 +276,8 @@ To prevent regulatory violations, the daemon implements a centralized duty-cycle
 
 4. **Key rotation support** (v1.1): To enable recovery from key compromise without network rebuild:
    - Each key has 4-byte `KEY_ID = HMAC-SHA256(MESH_KEY, "key-id")[0:4]`
-   - BEACON header includes `KEY_ID` field (added to frame format)
-   - Key rotation via encrypted LoRa `REKEY` frame: `Encrypt_ChaCha20(OLD_KEY, NEW_KEY || NEW_KEY_ID || VALID_AFTER_TIMESTAMP)`
+   - `KEY_ID` is present in the common header (§3.2) of all frame types, allowing receivers to select the correct key before HMAC verification
+   - Key rotation via encrypted LoRa `REKEY` frame: `ChaCha20Poly1305_Encrypt(OLD_KEY, NEW_KEY || NEW_KEY_ID || VALID_AFTER_TIMESTAMP)` with random nonce
    - Nodes accept frames authenticated with old or new key during 24-hour transition period
    - After transition, old key expires; compromised devices using old key ejected
    - New nodes provision latest key; key rotation is backward-compatible
@@ -318,10 +318,11 @@ New Device                    LoRa Channel              Existing Peer
 2. **BEACON validation:** Validate HMAC and decrypt payload using `MESH_KEY`. Discard if authentication fails (wrong network or corrupted frame).
 
 3. **JOIN_REQ with Proof-of-Work:** New node sends `JOIN_REQ` to the peer with highest RSSI. To prevent JOIN_REQ floods (F-SEC-002), the request includes proof-of-work:
-   - **PoW requirement**: Find `nonce` such that `SHA256(NodeID || nonce || timestamp_ms)[0:2] == 0x0000` (16-bit difficulty)
+   - **PoW requirement**: Find `nonce` such that `SHA256(NodeID || nonce || challenge)[0:2] == 0x0000` (16-bit difficulty)
+   - **Challenge source**: Use `BEACON.Seq` from the peer's most recent BEACON as the challenge (prevents precomputation, no clock dependency)
    - **Cost**: ~65k hash attempts, ~10ms on ARM CPU, ~200µs on x86 (negligible for legitimate joins)
    - **Benefit**: Spamming 1000 JOIN_REQ requires ~10 seconds of CPU, making floods impractical
-   - **Validation**: Peer verifies PoW before processing; reject if invalid or timestamp >10s old (prevents precomputation)
+   - **Validation**: Peer verifies PoW using its own recent BEACON sequence numbers (accepts last 10 BEACONs to handle timing); reject if invalid
 
 4. **JOIN_ACK with Rate Limiting:** Peer enforces per-NodeID quotas before responding:
    - **Token bucket**: 3 JOIN_REQ per hour per NodeID, burst=1
@@ -565,7 +566,7 @@ The daemon is structured around a set of long-running goroutines communicating v
 2. **Worker pool** (fixed size = 2 × runtime.NumCPU()):
    - Processes frames from `rxQueue` (parse, validate HMAC, decrypt, dispatch)
    - Bounded goroutines prevent OOM under flood
-   - Backpressure: if `rxQueue` full (64 entries), LoRa RX drops oldest frames
+   - Backpressure: if `rxQueue` full (64 entries), LoRa RX drops new incoming frames (tail-drop)
 
 3. **LoRa TX goroutine** (single writer owns radio):
    - Reads from priority queue `txQueue chan TxRequest` (buffered 16)
@@ -692,6 +693,14 @@ type Bus struct {
     metricsDropped  map[string]prometheus.Counter // per-consumer drop metrics
 }
 
+// NewBus creates a new hint bus with initialized maps.
+func NewBus() *Bus {
+    return &Bus{
+        consumerChans:  make(map[string]chan RoutingHint),
+        metricsDropped: make(map[string]prometheus.Counter),
+    }
+}
+
 func (b *Bus) Register(p HintProvider) { b.providers = append(b.providers, p) }
 
 func (b *Bus) Attach(c HintConsumer) {
@@ -701,13 +710,16 @@ func (b *Bus) Attach(c HintConsumer) {
 
 // Run starts the fan-out loop. Hints from all providers are broadcast to all
 // consumers in parallel. If a consumer's channel is full, the hint is dropped
-// (non-blocking send with timeout) to prevent one slow consumer from stalling
-// the entire bus.
+// (non-blocking send) to prevent one slow consumer from stalling the entire bus.
 func (b *Bus) Run(ctx context.Context) error {
+    var wg sync.WaitGroup
+    
     // Start consumer goroutines (one per consumer)
     for _, consumer := range b.consumers {
         ch := b.consumerChans[consumer.Name()]
+        wg.Add(1)
         go func(c HintConsumer, hints <-chan RoutingHint) {
+            defer wg.Done()
             for {
                 select {
                 case hint, ok := <-hints:
@@ -731,16 +743,18 @@ func (b *Bus) Run(ctx context.Context) error {
             return fmt.Errorf("provider %s subscribe failed: %w", provider.Name(), err)
         }
         
+        wg.Add(1)
         go func(name string, hints <-chan RoutingHint) {
+            defer wg.Done()
             for hint := range hints {
                 // Broadcast to all consumers in parallel (non-blocking)
                 for consumerName, ch := range b.consumerChans {
                     select {
                     case ch <- hint:
                         // delivered
-                    case <-time.After(100 * time.Millisecond):
-                        // consumer blocked >100ms, drop hint
-                        log.Warn("consumer blocked, dropping hint", 
+                    default:
+                        // consumer channel full, drop hint
+                        log.Warn("consumer channel full, dropping hint", 
                             "consumer", consumerName, "provider", name)
                         b.metricsDropped[consumerName].Inc()
                     case <-ctx.Done():
@@ -751,11 +765,18 @@ func (b *Bus) Run(ctx context.Context) error {
         }(provider.Name(), providerChan)
     }
     
+    // Wait for context cancellation
     <-ctx.Done()
-    // Close all consumer channels on shutdown
+    
+    // Wait for all provider goroutines to finish reading their channels
+    // (they will exit when provider channels close)
+    wg.Wait()
+    
+    // Now safe to close consumer channels (no more senders)
     for _, ch := range b.consumerChans {
         close(ch)
     }
+    
     return nil
 }
 ```
