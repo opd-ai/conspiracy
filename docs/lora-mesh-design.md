@@ -119,13 +119,14 @@ The LoRa channel is **advisory only**: if it is unavailable, the batman-adv data
  0                   1                   2                   3
  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|  Version(4)  |   Type (8)    |            Seq (16)            |
+| Ver(4)|Rsvd(4)|   Type (8)    |            Seq (16)            |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                         NodeID (32)                           |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-- **Version** (4 bits): Protocol version; current = `0x1`
+- **Ver** (4 bits): Protocol version; current = `0x1`
+- **Rsvd** (4 bits): Reserved, MUST be zero; allows future flag extension without a version bump
 - **Type** (8 bits): Frame type from table above
 - **Seq** (16 bits): Rolling sequence number for deduplication
 - **NodeID** (32 bits): FNV-1a-32 hash of device MAC address (not secret; collision probability acceptable at community scale)
@@ -136,7 +137,7 @@ Total header: 8 bytes, leaving ≥ 214 bytes for payload.
 
 ```
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|  Capabilities (8)  |  Channel (8)  |     RSSI Avg (8 signed) |
+| Capabilities (8) |  Channel (8)  | RSSI Avg (8, signed) |Rsvd(8)|
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |              SSID Length (8)   |   SSID (≤32 bytes)          |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -212,7 +213,7 @@ New Device                    LoRa Channel              Existing Peer
      │◀─── BEACON decoded ──────────│                         │
      │                              │                         │
      │─────────────── LoRa JOIN_REQ (NodeID, caps) ──────────▶│
-     │◀──────────────── LoRa JOIN_ACK (SSID, BSSID, Ch, Key) ─│
+     │◀──────────────── LoRa JOIN_ACK (SSID, BSSID, Ch, NetID) ──│
      │                              │                         │
      │══════════ 802.11s Open Mesh Peering (AMPE) ════════════▶│
      │◀═══════════════ Peering Confirm ═══════════════════════│
@@ -228,7 +229,7 @@ New Device                    LoRa Channel              Existing Peer
 
 1. **LoRa scan (0 – 120 s):** New node powers on, tunes LoRa to the configured frequency (default 868.1 MHz EU / 915 MHz US), and listens for `BEACON` frames. If none received within a configurable timeout (`beacon_timeout`, default 120 s), it broadcasts its own `BEACON` (acting as a new mesh seed).
 2. **BEACON validation:** Validate truncated HMAC against `MESH_KEY`. Discard if invalid (wrong network).
-3. **JOIN_REQ / JOIN_ACK:** New node sends `JOIN_REQ` to the peer with highest RSSI. Peer responds with `JOIN_ACK` containing Wi-Fi SSID, BSSID, channel, and mesh key confirmation.
+3. **JOIN_REQ / JOIN_ACK:** New node sends `JOIN_REQ` to the peer with highest RSSI. Peer responds with `JOIN_ACK` containing Wi-Fi SSID, BSSID, channel, and a **network identifier** (`NetID` = HMAC-SHA256(`MESH_KEY`, `"netid"`)[:4]). `MESH_KEY` itself is **never transmitted over LoRa** (the channel has no confidentiality); the `NetID` confirms the peer is on the same network without revealing the key. The new node, which already has `MESH_KEY` provisioned out-of-band, verifies `NetID` locally.
 4. **802.11s peering:** New node configures `wpa_supplicant` (or `hostapd` in mesh mode) with received parameters and initiates `AMPE` (Authenticated Mesh Peering Exchange) using `MESH_KEY` as the PMK seed.
 5. **batman-adv enrollment:** Daemon calls `batctl if add <mesh_iface>` via netlink. The kernel module begins flooding OGM packets; routing table converges within seconds.
 6. **Relay activation:** By default the node begins relaying immediately. No "admission" step; any node with a valid `MESH_KEY` is trusted.
@@ -259,10 +260,10 @@ The "no questions asked" join model means **possession of `MESH_KEY` is the sole
 ### 5.1 Recommended Libraries
 
 ```
-Library: go-lora (tarm/serial + custom SX127x driver)
+Library: github.com/tarm/serial
 License: MIT
 Import: github.com/tarm/serial
-Why: Pure-Go serial/SPI abstraction for SX127x UART-mode boards; no CGo dependency.
+Why: Pure-Go serial abstraction for SX127x UART-mode boards (e.g. RAK811); no CGo dependency. A thin SX127x register driver is layered on top internally.
 ```
 
 ```
@@ -372,13 +373,18 @@ All network addresses and connections use standard library interfaces.
 // internal/lora/driver.go
 
 // PacketRadio is satisfied by any LoRa radio backend.
-// It deliberately mirrors net.PacketConn so callers can substitute
-// a UDP stub in tests without hardware.
+// It is a deliberate subset of net.PacketConn (omitting LocalAddr) with an
+// additional SetDeadline for unified timeout control. Callers can substitute
+// a net.UDPConn stub in tests without hardware — note that SetDeadline on a
+// UDPConn sets both read and write deadlines simultaneously, which is
+// equivalent to calling SetReadDeadline + SetWriteDeadline together.
 type PacketRadio interface {
     ReadFrom(p []byte) (n int, addr net.Addr, err error)
     WriteTo(p []byte, addr net.Addr) (n int, err error)
-    Close() error
     SetDeadline(t time.Time) error
+    SetReadDeadline(t time.Time) error
+    SetWriteDeadline(t time.Time) error
+    Close() error
 }
 
 // LoRaAddr implements net.Addr for a LoRa node identifier.
@@ -448,8 +454,10 @@ Worker goroutines are started with `context.Context` propagation; shutdown is co
 
 // HintProvider produces RoutingHints from any source (LoRa, batman-adv, etc.)
 type HintProvider interface {
-    // Subscribe returns a channel on which the provider sends hints.
-    // Callers MUST drain or close the returned channel.
+    // Subscribe returns a receive-only channel on which the provider sends hints.
+    // The provider closes the channel when ctx is cancelled. Callers MUST
+    // drain the channel to avoid blocking the provider goroutine; cancel ctx
+    // to signal the provider to stop and close the channel.
     Subscribe(ctx context.Context) (<-chan RoutingHint, error)
     Name() string
 }
@@ -485,14 +493,17 @@ type YggdrasilConsumer struct {
 }
 
 func (y *YggdrasilConsumer) Consume(ctx context.Context, h hint.RoutingHint) error {
+    var errs []error
     for _, n := range h.Neighbors {
         if n.Hops > 2 {
             continue // only inject close neighbors
         }
         addr := deriveYggAddr(n.NodeID) // maps NodeID → Yggdrasil 200::/7 address
-        return y.addPeer(ctx, addr)
+        if err := y.addPeer(ctx, addr); err != nil {
+            errs = append(errs, err)
+        }
     }
-    return nil
+    return errors.Join(errs...)
 }
 
 func (y *YggdrasilConsumer) Name() string { return "yggdrasil" }
@@ -512,14 +523,17 @@ type CjdnsConsumer struct {
 }
 
 func (c *CjdnsConsumer) Consume(ctx context.Context, h hint.RoutingHint) error {
+    var errs []error
     for _, n := range h.Neighbors {
         pubKey := lookupCjdnsKey(n.NodeID) // from local key registry
         if pubKey == "" {
             continue
         }
-        return c.beginConnection(ctx, pubKey, n.NodeID)
+        if err := c.beginConnection(ctx, pubKey, n.NodeID); err != nil {
+            errs = append(errs, err)
+        }
     }
-    return nil
+    return errors.Join(errs...)
 }
 
 func (c *CjdnsConsumer) Name() string { return "cjdns" }
@@ -646,13 +660,13 @@ All recommended dependencies use OSI-approved permissive licenses. The following
 | `golang.org/x/crypto` | BSD-3-Clause | Include Go AUTHORS file |
 | `github.com/prometheus/client_golang` | Apache-2.0 | Include `NOTICE` file |
 
-**Project license recommendation:** MIT or Apache-2.0. Apache-2.0 is recommended if patent protection for contributors is desired. Both licenses are compatible with all dependencies listed above.
+**Project license:** This repository is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)** (see `LICENSE`). All recommended dependencies use OSI-approved permissive licenses (MIT, Apache-2.0, BSD-3-Clause), which are compatible with AGPL-3.0 for distribution: permissively-licensed code may be incorporated into an AGPL-3.0 work, but the combined work must be distributed under AGPL-3.0 terms. If a future fork or derivative work requires a permissive-only license (MIT/Apache-2.0), all selected dependencies remain compatible — however this would require relicensing the project itself. For contributions and redistribution, the AGPL-3.0 "network use is distribution" clause applies: any party that runs a modified version as a network service must publish the modified source.
 
 **batman-adv kernel module:** Licensed GPLv2. The daemon communicates with it via netlink sockets (userspace ↔ kernel boundary), which does **not** create a GPL derivative work obligation for the Go daemon itself. This is consistent with the Linux kernel syscall exception.
 
 **OpenWrt integration:** OpenWrt packages are distributed under their respective upstream licenses. The `conspiracy` daemon would be an independent package in the OpenWrt feed, requiring only its own `Makefile` and license file.
 
-**No copyleft contamination:** No GPL/LGPL libraries are linked into the Go binary. All selected libraries are MIT, Apache-2.0, or BSD-3-Clause, ensuring the daemon binary may be distributed under a permissive license.
+**Dependency copyleft analysis:** No GPL/LGPL libraries are linked into the Go binary. All selected libraries are MIT, Apache-2.0, or BSD-3-Clause. The project's AGPL-3.0 license imposes no additional constraints on these dependencies; the obligations flow in one direction (permissive → copyleft is always compatible).
 
 ---
 
