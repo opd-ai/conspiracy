@@ -1,6 +1,6 @@
 # LoRa-Assisted Mesh Networking Platform — Technical Design Document
 
-> **Status:** Draft v0.1  
+> **Status:** Draft v0.2  
 > **Date:** 2026-05-12  
 > **Repository:** opd-ai/conspiracy  
 > **Language:** Go (≥ 1.22)
@@ -23,9 +23,11 @@
 
 ## 1. Executive Summary
 
-This document specifies a **zero-configuration, community-owned layer-2 mesh network** built on IEEE 802.11r/s Wi-Fi and the B.A.T.M.A.N.-adv (`batman-adv`) kernel module, with LoRa (sub-GHz) as a dedicated out-of-band control channel. The platform is implemented in Go, targeting OpenWrt routers and Linux single-board computers equipped with LoRa radio hats (SX127x/SX126x chipsets).
+This document specifies a **zero-configuration, community-owned layer-2 mesh network** built on IEEE 802.11r/s Wi-Fi and the B.A.T.M.A.N.-adv (`batman-adv`) kernel module, with LoRa (sub-GHz) as a dedicated out-of-band control channel. The platform is implemented in Go, targeting OpenWrt routers and Linux single-board computers equipped with LoRa radio modules via SPI, UART, or USB interfaces (SX127x/SX126x chipsets, USB-Serial LoRa devices).
 
 Any in-range device running the daemon joins the mesh automatically: it listens for LoRa beacons, associates with the strongest peer, and enrolls into the `batman-adv` layer-2 fabric. The LoRa link carries only compact routing hints, neighbor summaries, and device-discovery beacons — never bulk payload — keeping duty-cycle well within regional limits. A clean `HintProvider`/`HintConsumer` interface allows future layer-3 overlays (cjdns, Yggdrasil, or custom protocols) to consume the same hint stream without modifying the core daemon. The design favors existing, permissively-licensed Go libraries, avoids libp2p and web frameworks, and is structured to scale across large geographic deployments with many nodes.
+
+**v0.2 Security and Resilience Enhancements:** This revision addresses critical security and scalability findings from design review, including: 64-bit HMAC authentication, RFC 6479 anti-replay windows, proof-of-work JOIN_REQ rate limiting, encrypted BEACON payloads, bounded peer tables with LRU eviction, global duty-cycle enforcement, OGM rate limiting, goroutine leak prevention, LoRa radio failure recovery, and key rotation protocol design.
 
 ---
 
@@ -41,6 +43,7 @@ Any in-range device running the daemon joins the mesh automatically: it listens 
 │  │  LoRa Radio  │    │  Wi-Fi Radio │    │   batman-adv (kernel │  │
 │  │  (SX127x/    │    │  (802.11r/s) │    │   module bat0)       │  │
 │  │   SX126x)    │    │              │    │                      │  │
+│  │  SPI/UART/USB│    │              │    │                      │  │
 │  └──────┬───────┘    └──────┬───────┘    └──────────┬───────────┘  │
 │         │                   │                       │              │
 │  ┌──────▼───────────────────▼───────────────────────▼───────────┐  │
@@ -597,6 +600,61 @@ The daemon is structured around a set of long-running goroutines communicating v
 
 Worker goroutines are started with `context.Context` propagation; shutdown is cooperative via `context.Cancel()`.
 
+### 5.5 LoRa Radio Failure Detection and Recovery (F-RES-004)
+
+LoRa is advisory-only by design, so radio failures should degrade gracefully without crashing the daemon. The system must detect failures, operate without LoRa, and attempt recovery.
+
+**Failure Detection:**
+
+1. **Persistent I/O errors**: Track consecutive failures on `PacketRadio.ReadFrom()` / `WriteTo()`
+   - Threshold: 10 consecutive errors within 30 seconds = radio declared failed
+   - Error types considered fatal: `ENODEV`, `EIO`, `ECONNRESET` (device disconnected)
+   - Transient errors (e.g., `EAGAIN`, `ETIMEDOUT`) do not increment counter
+
+2. **Health check**: If no successful RX/TX in 5 minutes, attempt test transmission
+   - Send low-priority PING frame; if TX fails, increment failure counter
+   - If radio silent (no frames received) but TX succeeds, radio may be RX-only failed (partial failure)
+
+**Degraded Operation Mode:**
+
+When LoRa radio is declared failed:
+
+1. **Disable LoRa subsystem**:
+   - Stop LoRa RX/TX goroutines gracefully (context cancellation)
+   - Close `PacketRadio` interface to release hardware
+   - Set `lora_operational` boolean metric to `false` (alert ops)
+
+2. **Continue mesh operation**:
+   - batman-adv OGM flooding continues independently (802.11s only)
+   - JOIN_REQ/BEACON discovery unavailable; nodes must join via existing 802.11s mesh peering
+   - HintProviders continue (batman-adv OGM listener still active)
+   - HintConsumers receive hints from batman-adv only (no LoRa hints)
+
+3. **User notification**:
+   - Log ERROR: "LoRa radio failed after N consecutive errors; continuing in 802.11s-only mode"
+   - Expose degraded state via Prometheus metrics and health endpoint
+
+**Automatic Recovery:**
+
+1. **Watchdog timer**: Every 60 seconds, if `lora_operational == false`:
+   - Attempt to re-initialize LoRa radio (reopen device, reconfigure registers)
+   - If successful: clear failure counter, restart RX/TX goroutines, set `lora_operational = true`
+   - If failed: increment recovery attempt counter; exponential backoff (max 10 minutes between attempts)
+
+2. **Recovery success**: Log INFO: "LoRa radio recovered after N attempts"
+
+3. **Permanent failure handling**:
+   - After 10 failed recovery attempts, extend retry interval to 10 minutes (don't spam logs)
+   - Daemon remains operational indefinitely in degraded mode
+   - Manual restart (systemd) required if recovery never succeeds
+
+**Error Handling Principles:**
+
+- **Never panic** on LoRa errors; always return error to caller and log
+- **Fail independently**: LoRa failure must not affect 802.11s/batman-adv operation
+- **Graceful degradation**: Reduced functionality (no LoRa discovery) beats total failure
+- **Automatic recovery**: Transient USB disconnects or SPI bus errors should self-heal without operator intervention
+
 ---
 
 ## 6. Layer-3 Extensibility
@@ -625,14 +683,81 @@ type HintConsumer interface {
 }
 
 // Bus fans out hints from all registered providers to all consumers.
+// Each consumer gets a dedicated buffered channel to prevent slow consumers
+// from blocking others (F-RES-002).
 type Bus struct {
-    providers []HintProvider
-    consumers []HintConsumer
+    providers       []HintProvider
+    consumers       []HintConsumer
+    consumerChans   map[string]chan RoutingHint  // keyed by consumer.Name()
+    metricsDropped  map[string]prometheus.Counter // per-consumer drop metrics
 }
 
 func (b *Bus) Register(p HintProvider) { b.providers = append(b.providers, p) }
-func (b *Bus) Attach(c HintConsumer)   { b.consumers = append(b.consumers, c) }
-func (b *Bus) Run(ctx context.Context) error { /* fan-out loop */ return nil }
+
+func (b *Bus) Attach(c HintConsumer) {
+    b.consumers = append(b.consumers, c)
+    b.consumerChans[c.Name()] = make(chan RoutingHint, 16) // buffered
+}
+
+// Run starts the fan-out loop. Hints from all providers are broadcast to all
+// consumers in parallel. If a consumer's channel is full, the hint is dropped
+// (non-blocking send with timeout) to prevent one slow consumer from stalling
+// the entire bus.
+func (b *Bus) Run(ctx context.Context) error {
+    // Start consumer goroutines (one per consumer)
+    for _, consumer := range b.consumers {
+        ch := b.consumerChans[consumer.Name()]
+        go func(c HintConsumer, hints <-chan RoutingHint) {
+            for {
+                select {
+                case hint, ok := <-hints:
+                    if !ok {
+                        return // channel closed, consumer shutdown
+                    }
+                    if err := c.Consume(ctx, hint); err != nil {
+                        log.Warn("consumer failed", "name", c.Name(), "error", err)
+                    }
+                case <-ctx.Done():
+                    return
+                }
+            }
+        }(consumer, ch)
+    }
+    
+    // Fan-out loop: read from all providers, broadcast to all consumers
+    for _, provider := range b.providers {
+        providerChan, err := provider.Subscribe(ctx)
+        if err != nil {
+            return fmt.Errorf("provider %s subscribe failed: %w", provider.Name(), err)
+        }
+        
+        go func(name string, hints <-chan RoutingHint) {
+            for hint := range hints {
+                // Broadcast to all consumers in parallel (non-blocking)
+                for consumerName, ch := range b.consumerChans {
+                    select {
+                    case ch <- hint:
+                        // delivered
+                    case <-time.After(100 * time.Millisecond):
+                        // consumer blocked >100ms, drop hint
+                        log.Warn("consumer blocked, dropping hint", 
+                            "consumer", consumerName, "provider", name)
+                        b.metricsDropped[consumerName].Inc()
+                    case <-ctx.Done():
+                        return
+                    }
+                }
+            }
+        }(provider.Name(), providerChan)
+    }
+    
+    <-ctx.Done()
+    // Close all consumer channels on shutdown
+    for _, ch := range b.consumerChans {
+        close(ch)
+    }
+    return nil
+}
 ```
 
 ### 6.2 Concrete Example — Yggdrasil Peer Injection
@@ -711,14 +836,14 @@ Both consumers register with the `hint.Bus` at startup and receive hints without
 **Minimum requirements:**
 - Linux kernel ≥ 5.10 (batman-adv module, nl80211 generic netlink)
 - Go cross-compilation target: `GOARCH=arm64`, `GOARCH=mipsle` (OpenWrt), `GOARCH=riscv64`
-- LoRa hardware on SPI bus or UART (SX127x series) or USB serial (LoRa stick)
+- LoRa hardware: SPI bus (e.g., HAT modules), UART (e.g., breakout boards), or USB-Serial (e.g., Dragino LG02, LoRa dongles) with SX127x/SX126x chipsets
 
 ### 7.2 System Service
 
 ```toml
 # /etc/conspiracyd/config.toml (example)
 [lora]
-device        = "/dev/spidev0.0"   # or "/dev/ttyS1" for UART
+device        = "/dev/spidev0.0"   # SPI: /dev/spidev0.0 | UART: /dev/ttyS1 | USB: /dev/ttyUSB0
 frequency_mhz = 868.1
 spreading     = 10                  # SF10: ~980 bps, ~4 km range
 bandwidth_khz = 125
@@ -731,6 +856,7 @@ channel        = 6
 
 [batman]
 interface      = "bat0"
+enabled        = true               # Set to false for 802.11s-only mode (HWMP routing)
 
 [plugins]
 yggdrasil = true
@@ -776,24 +902,22 @@ WantedBy=multi-user.target
 
 | Risk | Severity | Likelihood | Mitigation |
 |------|----------|-----------|------------|
-| Regulatory LoRa duty-cycle violation | High | Medium | Strict TX scheduler (§3.5); configurable per-region limits |
+| Regulatory LoRa duty-cycle violation | High | Medium | Strict TX scheduler with enforcement (§3.5); configurable per-region limits |
 | batman-adv route oscillation in dense deployments | Medium | Medium | Tune OGM interval; use batman-adv v2 (B.A.T.M.A.N. V) for more stable metric |
 | LoRa collision in high-density deployments (> 50 nodes in range) | Medium | High | Frequency hopping across 3 sub-bands; increase TX jitter window |
-| Key management complexity (MESH_KEY distribution) | High | High | Invest in UX: QR provisioning, NFC tap; future v2 key rotation |
-| batman-adv kernel module unavailable on target | Medium | Low | Provide fallback to `wpa_supplicant` mesh-only mode without B.A.T.M.A.N. |
+| Key management complexity (MESH_KEY distribution) | High | High | QR provisioning, NFC tap; key rotation protocol included (§3.6) |
+| batman-adv kernel module unavailable on target | Medium | Low | **Fallback to 802.11s-only mode** (F-RES-003): Daemon probes for batman-adv at startup (`modprobe batman-adv; test -d /sys/module/batman_adv`). If absent: (1) log warning and set `batman_mode=false`, (2) skip batman-adv netlink calls, (3) disable batman-adv OGM listener, (4) continue with 802.11s HWMP routing only, (5) ROUTE_HINT frames still processed for layer-3 HintConsumers (cjdns/Yggdrasil), (6) document limitation: no layer-2 broadcast forwarding across non-adjacent peers. |
 | Go cross-compilation gap (CGo dependencies) | Low | Low | Only pure-Go or periph.io libraries selected (§5.1) |
 | nl80211 kernel API changes | Low | Low | Depend on `mdlayher/wifi` which tracks upstream nl80211 |
 
 ### 8.2 Open Questions
 
 1. **Sub-1 GHz frequency selection:** EU 868 MHz and US 915 MHz are covered; other regions (Asia 433/920 MHz, AU 915–928 MHz) need per-region config profiles.
-2. **GPS integration depth:** BEACON optionally carries lat/lon (§3.3). Should the daemon integrate a GPS daemon (gpsd) for automatic position updates?
-3. **Mesh key rotation ceremony:** How should a community rotate `MESH_KEY` without splitting the mesh? A two-phase commit protocol over LoRa is possible but complex.
-4. **batman-adv vs. 802.11s mesh routing:** Some deployments may prefer 802.11s path selection (HWMP) without batman-adv. The daemon should support a `batman_adv = false` config option routing only via HWMP.
-5. **IPv4 addressing:** APIPA (169.254.x.x) is unreliable across large meshes due to collision probability. Consider a deterministic scheme derived from `NodeID`.
-6. **Security escalation path:** 32-bit truncated HMAC is sufficient for integrity but not authentication. If deployments grow, upgrade to full Ed25519 signatures on BEACON frames.
-7. **Power management:** Battery-powered nodes need adaptive TX interval and CPU sleep. This is not designed for v1 but the hint bus architecture accommodates a `PowerManager` consumer.
-8. **Multi-radio nodes:** Nodes with 2 Wi-Fi radios can dedicate one to 802.11s mesh and one to client AP. Interface selection logic needs specification.
+2. **GPS integration depth:** BEACON optionally carries encrypted lat/lon (§3.3). Should the daemon integrate a GPS daemon (gpsd) for automatic position updates? Consider privacy implications (GDPR/CCPA) and document opt-in requirements.
+3. **batman-adv vs. 802.11s mesh routing:** Some deployments may prefer 802.11s path selection (HWMP) without batman-adv. The daemon should support a `batman_adv = false` config option routing only via HWMP (fallback behavior specified in §8.1).
+4. **IPv4 addressing:** APIPA (169.254.x.x) is unreliable across large meshes due to collision probability. Consider a deterministic scheme derived from `NodeID`.
+5. **Power management:** Battery-powered nodes need adaptive TX interval and CPU sleep. This is not designed for v1.0 but the hint bus architecture accommodates a `PowerManager` consumer.
+6. **Multi-radio nodes:** Nodes with 2 Wi-Fi radios can dedicate one to 802.11s mesh and one to client AP. Interface selection logic needs specification.
 
 ---
 
