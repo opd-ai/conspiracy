@@ -696,6 +696,8 @@ The daemon is structured around a set of long-running goroutines communicating v
 
 **batman-adv Netlink Optimization (v0.3 event-driven):** Route table updates via netlink multicast notifications (`RTNLGRP_BATMAN_ADV`) instead of periodic polling. Subscribe to routing table change events at startup; receive incremental updates with <100ms latency. Fallback to 5-second polling if multicast unsupported by kernel/library. Reduces staleness from 0-5s to <100ms during topology changes.
 
+**Netlink Socket Buffer Sizing (v0.3.1 OGM storm resilience):** Set `SO_RCVBUF=1MB` on batman-adv netlink socket at initialization (via `setsockopt`). Default 32 KB buffer holds ~16 route change events; 1 MB buffer holds ~4k events. During partition rejoin (8k events/sec), provides 500ms buffering vs 2ms, reducing overflow probability from ~80% to <1%. On `ENOBUFS` error (buffer overflow), trigger immediate full route table sync (query batman-adv via netlink dump) instead of waiting for 5-second polling fallback.
+
 Worker goroutines are started with `context.Context` propagation; shutdown is cooperative via `context.Cancel()`.
 
 ### 5.5 LoRa Radio Failure Detection and Recovery (F-RES-004)
@@ -732,7 +734,7 @@ Before first LoRa transmission or nonce generation, daemon MUST verify CSPRNG en
    - Threshold: 10 consecutive errors within 30 seconds = radio declared failed
    - Error types considered fatal: `ENODEV`, `EIO`, `ECONNRESET` (device disconnected)
    - Transient errors (e.g., `EAGAIN`, `ETIMEDOUT`) do not increment counter
-   - **Exponential backoff on RX errors**: If `ReadFrom()` returns error, sleep for `min(2^consecutive_errors × 100ms, 10s)` before retry. Reset counter on successful read. Prevents CPU thrashing during error storms.
+   - **Exponential backoff on RX errors**: If `ReadFrom()` returns error, sleep for `min(2^consecutive_errors × 100ms, 2s)` before retry. Reset counter on successful read. Prevents CPU thrashing during error storms while maintaining JOIN_ACK responsiveness (v0.3.1: reduced cap from 10s to 2s).
 
 2. **Health check**: If no successful RX/TX in 5 minutes, attempt test transmission
    - Send low-priority PING frame; if TX fails, increment failure counter
