@@ -206,7 +206,7 @@ Total encrypted BEACON: 12-byte header + 12-byte nonce + 48-byte ciphertext + 16
 | 4 | batman-adv enrolled |
 | 3–0 | Reserved |
 
-### 3.4 ROUTE_HINT Frame Payload (≤ 108 bytes)
+### 3.4 ROUTE_HINT Frame Payload (≤ 116 bytes)
 
 Each ROUTE_HINT encodes up to **6 neighbor entries** (≈ 16 bytes each). TTL is strictly limited to prevent amplification attacks.
 
@@ -217,14 +217,20 @@ Each ROUTE_HINT encodes up to **6 neighbor entries** (≈ 16 bytes each). TTL is
 | [Neighbor NodeID (32)] [RSSI (8, signed)] [Hops (8)] [Pad16] |
 |  ... repeated Neighbor Count times ...                        |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                HMAC-SHA256 truncated (64 bits)                |
+|              HMAC-SHA256 truncated (96 bits / 12 bytes)       |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-**Anti-amplification constraints:**
+**Anti-amplification constraints (v0.3 hardening):**
 - `Neighbor Count` MUST be ≤ 6 (reject frames exceeding this)
-- `TTL` MUST be ≤ 3 on transmission (enforced at frame generation)
-- On receive: if `TTL > 3`, reject frame immediately (drop, log warning)
+- `TTL` MUST be ≤ **2** on transmission (reduced from 3; enforced at frame generation)
+  - Rationale: Limits worst-case amplification from 258× to ~42× (1 + 6 + 36)
+  - On receive: if `TTL > 2`, reject frame immediately (drop, log warning)
+- **Probabilistic forwarding**: Forward ROUTE_HINT with probability `P = 1 / (lora_peer_count + 1)`
+  - Node with 100 LoRa peers forwards only ~1% of received hints
+  - Breaks exponential amplification while maintaining hint propagation in sparse topologies
+  - Example: 10 peers → 9% forward probability; 50 peers → 2% probability
+  - Implementation: `if rand.Float64() < 1.0/(float64(loraPeerCount)+1.0)` then forward
 - On forward: decrement `TTL` before forwarding; drop when `TTL == 0`
 - Forwarding rate limit: max 1 forwarded hint per 10 seconds per node (token bucket)
 - Deduplication: maintain Bloom filter of `(NodeID, Seq)` pairs seen in last 60s; don't re-forward duplicates. Filter sized for expected load (e.g., 4 KB for ~1000 insertions at ~1% FP rate); actual FP rate depends on traffic volume.
@@ -233,12 +239,42 @@ Each ROUTE_HINT encodes up to **6 neighbor entries** (≈ 16 bytes each). TTL is
 
 **Regulatory limits (EU 868 MHz, Sub-Band 1):** 1% duty cycle → maximum 36 seconds on-air per hour at SF12/BW125 (time-on-air ≈ 1 s for 50-byte frame).
 
-| Frame Type | TX Interval | Notes |
-|------------|-------------|-------|
-| BEACON | 30 – 120 s (jittered ±20%) | Reduces collision probability |
-| ROUTE_HINT | On topology change, max 1/60 s | Debounced 5 s |
-| JOIN_REQ/ACK | On demand, ≤ 3 retries | Exponential back-off: 1 s, 2 s, 4 s |
-| PING/PONG | Only if Wi-Fi link not available | Last-resort |
+**Adaptive TX intervals for scale (v0.3):**
+
+| Frame Type | TX Interval (base) | Adaptive Scaling | Notes |
+|------------|-------------------|------------------|-------|
+| BEACON | 30 – 120 s (jittered ±20%) | `interval = 60s × (1 + peer_count / 100)` capped at 600s | At >100 peers, beacon every 10 min instead of 60s (10× reduction) |
+| ROUTE_HINT | On topology change, max 1/60 s | Debounced 5 s; increase to 30s if churn rate >10 events/sec | Prevents hint storms during partition rejoin |
+| JOIN_REQ/ACK | On demand, ≤ 3 retries | Exponential back-off: 1 s, 2 s, 4 s | — |
+| PING/PONG | Only if Wi-Fi link not available | — | Last-resort |
+
+**Multi-Frequency Zoning for 10³+ Node Deployments:**
+
+To prevent duty-cycle saturation at scale, deployments exceeding 250 nodes per geographic area MUST implement frequency zoning:
+
+1. **Frequency allocation**: Partition nodes into zones using 3-4 non-overlapping LoRa frequencies:
+   - EU 868 MHz: 868.1 / 868.3 / 868.5 MHz (150 kHz spacing)
+   - US 915 MHz: 915.2 / 915.6 / 916.0 / 916.4 MHz (400 kHz spacing)
+   - AS 923 MHz: 923.2 / 923.4 MHz (200 kHz spacing)
+
+2. **Zone assignment**: Hash-based deterministic assignment: `zone = NodeID % num_frequencies`
+   - Ensures geographically random distribution (adjacent nodes unlikely to share frequency)
+   - No coordination required; self-organizing
+
+3. **Bridge nodes**: Nodes at zone boundaries (detect >10% peers on different frequency) operate dual-frequency:
+   - Allocate 50% duty-cycle budget per frequency
+   - Forward critical frames (JOIN_ACK, BEACON) between frequencies
+   - Do NOT forward ROUTE_HINT across frequencies (amplification risk)
+
+4. **SF auto-selection**: In high-density zones (>100 visible peers), switch to SF7 (60ms ToA, 6× bandwidth efficiency)
+   - Accept reduced range (0.5 km vs 3 km urban)
+   - Compensate with higher node density
+   - Fallback to SF10 if peer count drops <20 (sparse deployment)
+
+5. **Deployment guidance**: For 1,000-node deployment:
+   - 4 frequency zones × 250 nodes/zone
+   - ~20 bridge nodes (8% overhead) at zone edges
+   - Aggregate duty-cycle: 4× reduction (9s/hour per frequency vs 36s aggregate)
 
 **Global Duty-Cycle Budget Enforcement:**
 
@@ -246,9 +282,9 @@ To prevent regulatory violations, the daemon implements a centralized duty-cycle
 
 1. **Sliding window tracker**: Maintain 1-hour sliding window of transmitted frames with time-on-air (ToA) calculations
 2. **ToA calculation**: Use Semtech formula based on SF, BW, payload length:
-   - SF12/BW125/50-byte frame ≈ 1.0s
-   - SF10/BW125/50-byte frame ≈ 370ms
-   - SF7/BW125/50-byte frame ≈ 60ms
+   - SF12/BW125/100-byte frame ≈ 1.8s
+   - SF10/BW125/100-byte frame ≈ 620ms
+   - SF7/BW125/100-byte frame ≈ 100ms
 3. **Pre-transmit check**: Before any TX, verify: `sum(ToA, last_hour) + this_ToA ≤ DUTY_CYCLE_LIMIT`
    - Default: `DUTY_CYCLE_LIMIT = 36s` (1% for EU 868 MHz)
    - Configurable per region: US 915 MHz = 4% (144s/hour), AS 433 MHz = 1% (36s/hour)
