@@ -4,7 +4,7 @@ Conspiracy is a zero-configuration, community-owned mesh networking platform tha
 
 The project targets embedded Linux devices (OpenWrt routers, Raspberry Pi, ARM/RISC-V single-board computers) equipped with LoRa radio modules. The LoRa channel carries only compact routing hints, neighbor summaries, and device-discovery beacons — never bulk payload — keeping duty-cycle within regional limits (EU: 1%, US: 4%). The platform provides a clean `HintProvider`/`HintConsumer` interface allowing layer-3 overlays (cjdns, Yggdrasil) to consume routing hints without modifying the core daemon.
 
-This repository currently contains the comprehensive design specification in `docs/lora-mesh-design.md` (1,312 lines). The Go implementation will follow the architecture and build instructions outlined in the specification. The design incorporates critical security enhancements including hybrid nonce construction with persistent reboot counter, entropy audit at startup, ChaCha20-Poly1305 AEAD encryption, proof-of-work anti-flood mechanisms, and comprehensive scaling strategies for deployments up to 5,000 nodes per autonomous mesh.
+This repository currently contains the comprehensive design specification in `docs/lora-mesh-design.md`. The Go implementation will follow the architecture and build instructions outlined in the specification. The design incorporates critical security enhancements including hybrid nonce construction with persistent reboot counter, entropy audit at startup, ChaCha20-Poly1305 AEAD encryption, proof-of-work anti-flood mechanisms, and comprehensive scaling strategies for deployments up to 5,000 nodes per autonomous mesh.
 
 ## Technical Stack
 
@@ -29,13 +29,13 @@ This repository currently contains the comprehensive design specification in `do
 
 ## Code Assistance Guidelines
 
-1. **Use Network Interface Types for Maximum Testability**: When declaring network variables, ALWAYS use interface types instead of concrete types. This enhances testability and flexibility when working with different network implementations or mocks:
-   - Never use `net.UDPConn`, use `net.PacketConn` instead
-   - Never use `net.TCPConn`, use `net.Conn` instead
-   - Never use `net.UDPListener` or `net.TCPListener`, use `net.Listener` instead
-   - Never use `net.UDPAddr`, `net.IPAddr`, or `net.TCPAddr` - use `net.Addr` only instead
+1. **Use Network Interface Types for Maximum Testability** (see also: Networking Best Practices section): When declaring network variables, ALWAYS use interface types instead of concrete types. This enhances testability and flexibility when working with different network implementations or mocks:
+   - Never use `*net.UDPConn`, use `net.PacketConn` instead
+   - Never use `*net.TCPConn`, use `net.Conn` instead
+   - Never use `*net.TCPListener`, use `net.Listener` instead
+   - Never use `*net.UDPAddr`, `*net.IPAddr`, or `*net.TCPAddr` - use `net.Addr` only instead
    - Never use a type switch or type assertion to convert from an interface type to a concrete type. Use the interface methods instead
-   - Example: The `PacketRadio` interface in `internal/lora/driver.go` is designed to be satisfied by any LoRa backend while allowing `net.UDPConn` substitution in tests without hardware
+   - Example: The planned `PacketRadio` interface (to be implemented in `internal/lora/driver.go`) will be satisfied by any LoRa backend while allowing `net.UDPConn` substitution in tests without hardware
 
 2. **Implement Strict Security Validation Before Cryptographic Operations**: All cryptographic operations MUST be preceded by comprehensive validation. Before any nonce generation, key derivation, or encryption:
    - Perform blocking read from `/dev/random` or `getrandom(GRND_RANDOM)` to ensure kernel entropy pool initialization (may block 10-30s on first boot on embedded devices without hardware RNG)
@@ -49,8 +49,8 @@ This repository currently contains the comprehensive design specification in `do
    - `reboot_counter`: 32-bit counter stored in persistent storage (NVRAM/flash at `/var/lib/conspiracyd/reboot_counter`), incremented on every daemon boot using atomic write-rename
    - `frame_seq`: 16-bit frame sequence number from common header
    - `crypto/rand(8_bytes)`: 64-bit random entropy per frame
-   - This ensures nonce uniqueness even if CSPRNG fails or resets on reboot
-   - Assumption: crypto/rand produces varying output (validated via startup check per guideline #2)
+   - This hybrid approach provides defense-in-depth: the reboot counter prevents nonce reuse across reboots, while crypto/rand provides per-frame uniqueness
+   - **Critical assumption**: crypto/rand MUST produce varying output (validated via startup check per guideline #2). If CSPRNG completely fails (constant output), nonces can still repeat after frame_seq wraps (~65k frames) within the same reboot cycle
    - Single nonce reuse breaks all BEACON confidentiality - this is a critical security requirement
 
 4. **Enforce Batman-adv Architectural Limits with Hard Caps and Federation Guidance**: The maximum supported deployment size is 5,000 nodes per autonomous mesh due to batman-adv OGM flooding overhead (~640 KB/sec at 10,000 nodes). Implementation MUST enforce:
@@ -103,7 +103,7 @@ This repository currently contains the comprehensive design specification in `do
   - **Layer-3 Extensibility**: Clean `HintProvider`/`HintConsumer` interface for overlays (cjdns, Yggdrasil) via in-process pub/sub HintBus
   - **Fallback mode**: If batman-adv unavailable, continue with 802.11s HWMP routing only (no layer-2 broadcast forwarding beyond 1 hop)
 - **Key Directories**:
-  - `docs/lora-mesh-design.md` - Comprehensive design specification (v1.0, 1,312 lines) with protocol details, security model, and implementation guidance
+  - `docs/lora-mesh-design.md` - Comprehensive design specification (v1.0) with protocol details, security model, and implementation guidance
   - `cmd/conspiracyd/` - Daemon entry point (to be implemented)
   - `internal/lora/` - LoRa radio driver and frame codec (SPI/UART/USB abstraction, duty-cycle scheduler, LBT)
   - `internal/wifi/` - nl80211 / wpa_supplicant control (802.11s mesh join/leave)
@@ -159,11 +159,11 @@ This repository currently contains the comprehensive design specification in `do
 
 ## Networking Best Practices (for Go projects)
 
-When declaring network variables, always use interface types:
-- Never use `net.UDPAddr`, `net.IPAddr`, or `net.TCPAddr`. Use `net.Addr` only instead.
-- Never use `net.UDPConn`, use `net.PacketConn` instead
-- Never use `net.TCPConn`, use `net.Conn` instead
-- Never use `net.UDPListener` or `net.TCPListener`, use `net.Listener` instead
+When declaring network variables, always use interface types (see Code Assistance Guideline #1 for detailed rationale):
+- Never use `*net.UDPAddr`, `*net.IPAddr`, or `*net.TCPAddr`. Use `net.Addr` only instead.
+- Never use `*net.UDPConn`, use `net.PacketConn` instead
+- Never use `*net.TCPConn`, use `net.Conn` instead
+- Never use `*net.TCPListener`, use `net.Listener` instead
 - Never use a type switch or type assertion to convert from an interface type to a concrete type. Use the interface methods instead.
 
 This approach enhances testability and flexibility when working with different network implementations or mocks.
