@@ -35,7 +35,7 @@ This document specifies a **zero-configuration, community-owned layer-2 mesh net
 
 Any in-range device running the daemon joins the mesh automatically: it listens for LoRa beacons, associates with the strongest peer, and enrolls into the `batman-adv` layer-2 fabric. The LoRa link carries only compact routing hints, neighbor summaries, and device-discovery beacons — never bulk payload — keeping duty-cycle well within regional limits. A clean `HintProvider`/`HintConsumer` interface allows future layer-3 overlays (cjdns, Yggdrasil, or custom protocols) to consume the same hint stream without modifying the core daemon. The design favors existing, permissively-licensed Go libraries, avoids libp2p and web frameworks, and is structured to scale across large geographic deployments with many nodes.
 
-**Production-Readiness Enhancements:** This version implements critical security, scalability, and resilience improvements including: hybrid nonce construction with persistent reboot counter, entropy audit at startup, multi-frequency LoRa zoning for 1000+ nodes, explicit 5,000-node architectural limits with federation guidance, partition rejoin OGM storm mitigation, reduced ROUTE_HINT TTL with probabilistic forwarding, NodeID collision detection, 96-bit HMAC truncation, REKEY replay prevention, tiered peer storage, netlink multicast route updates, LoRa RX error backoff, PoW timestamp inclusion, fixed-length BEACON padding, JOIN_ACK BSSID inclusion, and adaptive HintBus consumer buffers.
+**Production-Readiness Enhancements:** This version implements critical security, scalability, and resilience improvements including: hybrid nonce construction with persistent reboot counter, entropy audit at startup, multi-frequency LoRa zoning for 250+ nodes per area, explicit 5,000-node architectural limits with federation guidance, partition rejoin OGM storm mitigation, reduced ROUTE_HINT TTL with probabilistic forwarding, NodeID collision detection, 96-bit HMAC truncation, REKEY replay prevention, tiered peer storage, netlink multicast route updates, LoRa RX error backoff, PoW timestamp inclusion, fixed-length BEACON padding, JOIN_ACK BSSID inclusion, and adaptive HintBus consumer buffers.
 
 ---
 
@@ -97,7 +97,7 @@ sequenceDiagram
 
 | Dimension | Data Plane | Control Plane |
 |---|---|---|
-| **Technology** | IEEE 802.11s + batman-adv bat0 | Raw LoRa (sub-GHz, SX127x/SX126x) |
+| **Technology** | IEEE 802.11s + batman-adv `bat0` | Raw LoRa (sub-GHz, SX127x/SX126x) |
 | **Bandwidth** | Typical 54–300 Mbps (Wi-Fi) | 250 bps – 50 kbps (LoRa SF7–SF12) |
 | **Latency** | < 10 ms hop | 100 ms – 2 s per frame |
 | **Range** | 50 – 200 m (urban) | 1 – 15 km (open), 0.5 – 3 km (urban) |
@@ -149,7 +149,7 @@ Total header: 12 bytes, leaving ≥ 210 bytes for payload.
 
 ### 3.3 BEACON Frame Payload (encrypted, 101 bytes total on-wire)
 
-BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, network topology hints) that MUST NOT be accessible to non-members. The entire payload is encrypted using ChaCha20-Poly1305 AEAD with a key derived from MESH_KEY, preserving open-join (anyone with MESH_KEY can decrypt) while preventing reconnaissance attacks.
+BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, network topology hints) that MUST NOT be accessible to non-members. The entire payload is encrypted using ChaCha20-Poly1305 AEAD with a key derived from `MESH_KEY`, preserving open-join (anyone with `MESH_KEY` can decrypt) while preventing reconnaissance attacks.
 
 **Encryption:**
 - Algorithm: ChaCha20-Poly1305 (AEAD)
@@ -193,7 +193,7 @@ BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, ne
 - **Total plaintext size: 4 + 1 + 32 + 8 + 4 = 49 bytes** (fixed for all BEACONs)
 - Rationale: Normalizes all BEACON ciphertexts to same length, preventing traffic analysis via frame length
 - Privacy improvement from v0.2: observers cannot infer SSID length or whether GPS is enabled
-- **Wire format compatibility (v1.0)**: Protocol version `0x3` due to BEACON payload size change (45→49 bytes from v0.2). Nodes running v0.2 will reject v0.3 BEACONs (HMAC verification fails due to size mismatch). **Rolling upgrade**: Deploy v1.0 to ≥50% of nodes before enabling Timestamp validation; v1.0 nodes can parse v0.2 BEACONs (ignore missing Timestamp, skip PoW freshness check) during transition. After 24h, all nodes MUST be v1.0; enable strict Timestamp validation via config flag.
+- **Wire format compatibility (v1.0)**: Protocol version `0x3` due to BEACON payload size change (45→49 bytes from v0.2). Nodes running v0.2 will reject v1.0 BEACONs (HMAC verification fails due to size mismatch). **Rolling upgrade**: Deploy v1.0 to ≥50% of nodes before enabling Timestamp validation; v1.0 nodes can parse v0.2 BEACONs (ignore missing Timestamp, skip PoW freshness check) during transition. After 24h, all nodes MUST be v1.0; enable strict Timestamp validation via config flag.
 
 **Encrypted frame structure (on-wire):**
 
@@ -329,7 +329,7 @@ To prevent regulatory violations, the daemon implements a centralized duty-cycle
 
 ### 3.6 Security and Authentication Model
 
-**Threat model:** The LoRa channel is assumed **not confidential** (broadcast, low-power, easily received by anyone in range). The goal is **integrity** (prevent spoofed routing hints that MUST NOT redirect traffic) and **replay prevention**.
+**Threat model:** The LoRa channel is assumed **not confidential** (broadcast, low-power, easily received by anyone in range). The goal is **integrity** (prevent spoofed routing hints from redirecting traffic) and **replay prevention**. Receivers MUST validate HMAC before accepting any routing hint.
 
 **Mechanism:**
 
@@ -697,7 +697,7 @@ The daemon is structured around a set of long-running goroutines communicating v
 
 **Async RX Pattern (F-PERF-001):** LoRa RX is fully decoupled from frame processing. The radio always returns to ready state within ~1ms, ensuring no frame loss due to processing delays.
 
-**Frame Serialization Optimization (v1.0 guidance):** Marshal/unmarshal operations MUST use pre-allocated buffer pools (`sync.Pool` with 256-byte buffers) to avoid heap allocations in hot path. Profile allocation rate (`go test -benchmem`) before optimizing; target <1000 allocs/sec. Consider zero-copy serialization via `unsafe.Slice` for header structs if profiling shows GC overhead >1% CPU.
+**Frame Serialization Optimization (v1.0 guidance):** Marshal/unmarshal operations SHOULD use pre-allocated buffer pools (`sync.Pool` with 256-byte buffers) to avoid heap allocations in hot path. Profile allocation rate (`go test -benchmem`) first to identify bottlenecks; target <1000 allocs/sec. Consider zero-copy serialization via `unsafe.Slice` for header structs if profiling shows GC overhead >1% CPU.
 
 **Non-Blocking HintBus (F-RES-002):** Each HintConsumer gets a dedicated buffered channel (adaptive sizing in v0.3). Bus uses `select` with non-blocking send; slow consumers cannot block others.
 
@@ -722,7 +722,7 @@ Before first LoRa transmission or nonce generation, daemon MUST verify CSPRNG en
 
 2. **Entropy pool check** (Linux-specific):
    - Read `/proc/sys/kernel/random/entropy_avail`
-   - If <128 bits available, log WARNING: "Low entropy detected; nonce generation will be predictable"
+   - If <128 bits available, log CRITICAL: "Insufficient entropy detected; blocking crypto operations until entropy pool initialized"
    - Require ≥128 bits before proceeding with any cryptographic operations
 
 3. **CSPRNG output validation** (v1.0 critical):
@@ -785,7 +785,7 @@ When LoRa radio is declared failed:
 - **Never panic** on LoRa errors; always return error to caller and log
 - **Fail independently**: LoRa failure MUST NOT affect 802.11s/batman-adv operation
 - **Graceful degradation**: Reduced functionality (no LoRa discovery) beats total failure
-- **Automatic recovery**: Transient USB disconnects or SPI bus errors MUST self-heal without operator intervention
+- **Automatic recovery**: Transient USB disconnects or SPI bus errors SHOULD self-heal without operator intervention when possible; daemon MUST attempt automatic recovery with exponential backoff
 
 ---
 
@@ -1055,11 +1055,11 @@ WantedBy=multi-user.target
 | Risk | Severity | Likelihood | Mitigation |
 |------|----------|-----------|------------|
 | **ARCHITECTURAL LIMIT: batman-adv scaling beyond 5,000 nodes (v1.0)** | **Critical** | **High (at scale)** | **HARD LIMIT**: Maximum supported deployment size is **5,000 nodes per autonomous mesh**. batman-adv OGM flooding generates ~640 KB/sec overhead at 10,000 nodes (~50% of 802.11n channel capacity); mesh becomes unusable for data traffic. **Mitigation for larger deployments**: (1) **Federation architecture**: Deploy multiple independent mesh islands (each ≤5k nodes) with unique `MESH_KEY` and SSID, connected via Yggdrasil overlay routing. HintConsumers propagate routes between islands; batman-adv OGMs stay local. (2) Document explicitly in deployment guide: "Maximum: 5,000 nodes. For 10k+ deployments, use federated mesh islands with layer-3 interconnect." (3) Proactive protocol: Consider switching to AODV-based reactive routing at 1000+ scale in v2.0 (deferred). This is a fundamental protocol limit, not a bug. |
-| Regulatory LoRa duty-cycle violation | High | Medium (mitigated in v1.0) | Strict TX scheduler with enforcement (§3.5); multi-frequency zoning for 1000+ nodes (§3.5); configurable per-region limits |
+| Regulatory LoRa duty-cycle violation | High | Medium (mitigated in v1.0) | Strict TX scheduler with enforcement (§3.5); multi-frequency zoning for 250+ nodes per area (§3.5); configurable per-region limits |
 | batman-adv route oscillation in dense deployments | Medium | Medium | Tune OGM interval; use batman-adv v2 (B.A.T.M.A.N. V) for more stable metric; OGM storm mitigation during partition rejoin (§5.4) |
 | LoRa collision in high-density deployments (> 50 nodes in range) | Medium | Medium (reduced in v1.0) | Multi-frequency zoning across 3-4 sub-bands (§3.5); adaptive SF selection; increased TX jitter window |
 | Key management complexity (MESH_KEY distribution) | High | High | QR provisioning, NFC tap; key rotation protocol with replay prevention included (§3.6) |
-| **batman-adv kernel module unavailable on target** | Medium | Low | **Fallback to 802.11s-only mode**: Daemon probes for batman-adv at startup (`modprobe batman-adv; test -d /sys/module/batman_adv`). If absent: (1) log warning and set `batman_mode=false`, (2) skip batman-adv netlink calls, (3) disable batman-adv OGM listener, (4) continue with 802.11s HWMP routing only, (5) ROUTE_HINT frames still processed for layer-3 HintConsumers (cjdns/Yggdrasil), (6) document limitation: no layer-2 broadcast forwarding across non-adjacent peers. **TESTING REQUIREMENT**: Integration test suite MUST validate fallback mode: (1) Create test environment with kernel compiled without `CONFIG_BATMAN_ADV`, (2) Verify daemon starts successfully, (3) Log contains "batman-adv unavailable; operating in 802.11s-only mode" WARNING, (4) Test 3-node triangle topology with packet forwarding, (5) Verify `batman_adv_available` metric = `false`, (6) Document HWMP limitations in deployment guide (no L2 broadcast beyond 1 hop, higher convergence latency). |
+| **batman-adv kernel module unavailable on target** | Medium | Low | **Fallback to 802.11s-only mode**: Daemon probes for batman-adv at startup (`modprobe batman-adv; test -d /sys/module/batman_adv`). If absent: (1) log warning and set `batman.enabled=false` in runtime config, (2) skip batman-adv netlink calls, (3) disable batman-adv OGM listener, (4) continue with 802.11s HWMP routing only, (5) ROUTE_HINT frames still processed for layer-3 HintConsumers (cjdns/Yggdrasil), (6) document limitation: no layer-2 broadcast forwarding across non-adjacent peers. **TESTING REQUIREMENT**: Integration test suite MUST validate fallback mode: (1) Create test environment with kernel compiled without `CONFIG_BATMAN_ADV`, (2) Verify daemon starts successfully, (3) Log contains "batman-adv unavailable; operating in 802.11s-only mode" WARNING, (4) Test 3-node triangle topology with packet forwarding, (5) Verify `batman_adv_available` metric = `false`, (6) Document HWMP limitations in deployment guide (no L2 broadcast beyond 1 hop, higher convergence latency). |
 | Go cross-compilation gap (CGo dependencies) | Low | Low | Only pure-Go or periph.io libraries selected (§5.1) |
 | nl80211 kernel API changes | Low | Low | Depend on `mdlayher/wifi` which tracks upstream nl80211 |
 
@@ -1078,7 +1078,7 @@ The following items require architect decision before implementation:
    - **Recommendation**: Option B; keeps core simple while enabling auto-positioning for users who want it. Consider privacy implications (GDPR/CCPA) and document opt-in requirements.
 
 3. **batman-adv vs. 802.11s mesh routing:** Some deployments will prefer 802.11s path selection (HWMP) without batman-adv.
-   - **RESOLVED**: The daemon MUST support a `batman_adv = false` config option routing only via HWMP (fallback behavior specified in §8.1).
+   - **RESOLVED**: The daemon MUST support a `batman.enabled = false` config option routing only via HWMP (fallback behavior specified in §8.1).
 
 4. **IPv4 addressing:** APIPA (169.254.x.x) is unreliable across large meshes due to collision probability.
    - **FLAGGED FOR DECISION**: Deterministic IPv4 address scheme
