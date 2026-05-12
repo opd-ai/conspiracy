@@ -153,6 +153,7 @@ BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, ne
   - `frame_seq`: 16-bit frame sequence number from common header
   - `crypto/rand(8_bytes)`: 64-bit random entropy per frame
   - **Rationale**: Ensures nonce uniqueness even if CSPRNG fails or resets on reboot; reboot counter prevents nonce reuse across power cycles
+  - **Assumption**: `crypto/rand` must produce varying output (not constant). If CSPRNG completely fails (constant output), nonces repeat after `frame_seq` wraps (~65k frames). Entropy audit at startup (§5.5) detects this failure mode before first transmission.
   - **Storage**: Reboot counter persisted to `/var/lib/conspiracyd/reboot_counter` (atomic write-rename); survives firmware updates
 - Overhead: +16 bytes (Poly1305 authentication tag) + 12 bytes (nonce)
 
@@ -162,7 +163,7 @@ BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, ne
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 | Capabilities (8) |  Channel (8)  | RSSI Avg (8, signed) |Rsvd(8)|
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|              SSID Length (8)   |   SSID (≤32 bytes)          |
+|              SSID Length (8)   |   SSID (32 bytes, padded)   |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |  Lat (32-bit fixed-point, 1e-5 deg resolution)                |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -170,7 +171,13 @@ BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, ne
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-**Note**: GPS fields (Lat/Lon) are always present (8 bytes total). If GPS disabled (Capabilities bit 7 = 0), fields are filled with zeros. This normalizes all BEACON ciphertexts to the same length (48 bytes plaintext), preventing traffic analysis via frame length. Privacy improvement from v0.2: observers cannot infer which nodes have GPS enabled.
+**Fixed-length padding scheme (v0.3 traffic analysis resistance):**
+- SSID field is **always 32 bytes** on-wire (padded with zeros if actual SSID is shorter)
+- SSID Length field indicates actual SSID length (1-32); receiver truncates padding after decryption
+- GPS fields (Lat/Lon) are always present (8 bytes total); filled with zeros if GPS disabled (Capabilities bit 7 = 0)
+- **Total plaintext size: 4 + 1 + 32 + 8 = 45 bytes** (fixed for all BEACONs)
+- Rationale: Normalizes all BEACON ciphertexts to same length, preventing traffic analysis via frame length
+- Privacy improvement from v0.2: observers cannot infer SSID length or whether GPS is enabled
 
 **Encrypted frame structure (on-wire):**
 
@@ -179,7 +186,7 @@ BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, ne
 |                  Nonce (96 bits / 12 bytes)                   |
 |        (hybrid construction: HMAC of reboot/seq/rand)         |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|            Ciphertext (48 bytes fixed length)                 |
+|            Ciphertext (45 bytes fixed length)                 |
 |                   (encrypted payload above)                   |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |             Poly1305 Tag (128 bits / 16 bytes)                |
@@ -188,7 +195,7 @@ BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, ne
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-Total encrypted BEACON: 12-byte header + 12-byte nonce + 48-byte ciphertext + 16-byte tag + 12-byte HMAC = **100 bytes** (well within 222-byte LoRa limit; +12 bytes vs v0.2).
+Total encrypted BEACON: 12-byte header + 12-byte nonce + 45-byte ciphertext + 16-byte tag + 12-byte HMAC = **97 bytes** (well within 222-byte LoRa limit; +9 bytes vs v0.2).
 
 **Security properties:**
 - Confidentiality: Only mesh members with `MESH_KEY` can decrypt
@@ -206,9 +213,9 @@ Total encrypted BEACON: 12-byte header + 12-byte nonce + 48-byte ciphertext + 16
 | 4 | batman-adv enrolled |
 | 3–0 | Reserved |
 
-### 3.4 ROUTE_HINT Frame Payload (≤ 116 bytes)
+### 3.4 ROUTE_HINT Frame Payload (≤ 64 bytes)
 
-Each ROUTE_HINT encodes up to **6 neighbor entries** (≈ 16 bytes each). TTL is strictly limited to prevent amplification attacks.
+Each ROUTE_HINT encodes up to **6 neighbor entries** (8 bytes each). TTL is strictly limited to prevent amplification attacks.
 
 ```
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -220,6 +227,13 @@ Each ROUTE_HINT encodes up to **6 neighbor entries** (≈ 16 bytes each). TTL is
 |              HMAC-SHA256 truncated (96 bits / 12 bytes)       |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
+
+**Size calculation:**
+- Header: 4 bytes (Neighbor Count + Flags + TTL + Pad)
+- Per-neighbor entry: 8 bytes (NodeID 32-bit + RSSI 8-bit + Hops 8-bit + Pad 16-bit = 64 bits)
+- Max neighbors: 6 entries × 8 bytes = 48 bytes
+- HMAC: 12 bytes (96-bit truncation)
+- **Total payload: 4 + 48 + 12 = 64 bytes** (plus 12-byte common header on-wire = 76 bytes total frame)
 
 **Anti-amplification constraints (v0.3 hardening):**
 - `Neighbor Count` MUST be ≤ 6 (reject frames exceeding this)
