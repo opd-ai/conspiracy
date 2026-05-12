@@ -641,26 +641,30 @@ The daemon is structured around a set of long-running goroutines communicating v
    - Alert if >1000 goroutines (indicates leak)
    - Expose `goroutine_count` gauge metric
 
-**Shared State Protection:**
+**Shared State Protection (v0.3 with tiered storage and OGM storm mitigation):**
 
 | State | Protection | Bounded Size | Eviction Policy |
 |-------|-----------|--------------|-----------------|
-| **Peer table** (`map[uint32]PeerInfo`) | Sharded `sync.RWMutex` (16 shards by `NodeID & 0xF`) | Max 10,000 entries | LRU by last-frame-received timestamp; evict after 24h inactivity |
+| **Peer table (tiered)** | Sharded `sync.RWMutex` (16 shards by `NodeID & 0xF`) | Active: 1,000 entries; Passive: 9,000 entries | **Tiered storage**: Active peers (full metadata: 128 bytes/peer) promoted on recent RX/TX (<5 min); Passive peers (minimal: 16 bytes = NodeID + last-seen) for inactive nodes. LRU eviction after 24h (active) or 1h (passive) inactivity. Memory: Active 128 KB + Passive 144 KB = 272 KB total for 10k peers (vs 1.28 MB flat) |
 | **Route table** (batman-adv OGM cache) | `sync.Mutex` | Max 10,000 originators | LRU by last-OGM-received; evict entries with seq# deviation >1000 |
-| **OGM rate limiter** | `sync.Map` of token buckets | Bounded by peer table size | Per-originator: 10 OGM/sec, burst=20; drop excess |
+| **OGM rate limiter (with burst allowance)** | `sync.Map` of token buckets | Bounded by peer table size | Per-originator: 10 OGM/sec, burst=20 (normal); **During partition rejoin** (detect: peer count +50% within 10s): temporarily increase burst to 50 for 60s, then reset. Drop excess. |
+| **OGM rejoin coordinator** | `sync.Mutex` on global state | Single instance | **Staggered re-injection**: If churn rate >10 events/sec, add per-node random jitter (0-5s) before broadcasting first OGM to new partition; reduces convergence storm from 250k OGMs to ~50k over 30s window |
 | **Anti-replay windows** | `sync.Map` of bitmaps | 128-bit bitmap × active peers (~1 KB for 64 peers) | Evict NodeID entries after 10 min inactivity |
 | **JOIN_REQ quotas** | `sync.Map` of token buckets | Max 1024 entries (LRU) | Per-NodeID: 3 req/hour, burst=1; evict oldest on overflow |
+| **NodeID collision pins** (v0.3) | `sync.Map` of HMAC suffixes | Max 10,000 entries (peer table size) | Store `(NodeID, HMAC_suffix)` on first contact; 8 bytes/entry = 80 KB overhead. Clear on KEY_ID rotation. |
 | **LoRa TX queue** | `chan TxRequest` (buffered 16) | 16 pending frames | Priority-based: drop LOW before MED before HIGH |
 | **LoRa RX queue** | `chan Frame` (buffered 64) | 64 frames (~16 KB) | Drop oldest on overflow (head-drop policy) |
 | **LoRa dedup cache** | `sync.Mutex` on LRU map | 512 entries (4 KB) | LRU by frame timestamp; TTL 60s |
-| **HintBus consumer channels** | `chan RoutingHint` per consumer | 16 hints per consumer | Drop hint if consumer channel full (non-blocking send) |
+| **HintBus consumer channels** | `chan RoutingHint` per consumer | **Adaptive sizing** (v0.3): Profile consumer latency at startup; size = `latency_ms × expected_hint_rate × 2`, capped at 256 | Drop hint if consumer channel full (non-blocking send); if drop rate >50% over 60s, log ERROR and trigger consumer degraded mode |
 | **Config** (read-only after init) | No lock needed | — | Loaded once at start |
 
 **Async RX Pattern (F-PERF-001):** LoRa RX is fully decoupled from frame processing. The radio always returns to ready state within ~1ms, ensuring no frame loss due to processing delays.
 
-**Non-Blocking HintBus (F-RES-002):** Each HintConsumer gets a dedicated buffered channel (cap=16). Bus uses `select` with 100ms timeout when sending; slow consumers cannot block others.
+**Frame Serialization Optimization (v0.3 guidance):** Marshal/unmarshal operations should use pre-allocated buffer pools (`sync.Pool` with 256-byte buffers) to avoid heap allocations in hot path. Profile allocation rate (`go test -benchmem`) before optimizing; target <1000 allocs/sec. Consider zero-copy serialization via `unsafe.Slice` for header structs if profiling shows GC overhead >1% CPU.
 
-**batman-adv Netlink Optimization:** Route table refreshed every 5 seconds (not per-OGM). Use `NLM_F_DUMP` with incremental updates where supported by `vishvananda/netlink`.
+**Non-Blocking HintBus (F-RES-002):** Each HintConsumer gets a dedicated buffered channel (adaptive sizing in v0.3). Bus uses `select` with non-blocking send; slow consumers cannot block others.
+
+**batman-adv Netlink Optimization (v0.3 event-driven):** Route table updates via netlink multicast notifications (`RTNLGRP_BATMAN_ADV`) instead of periodic polling. Subscribe to routing table change events at startup; receive incremental updates with <100ms latency. Fallback to 5-second polling if multicast unsupported by kernel/library. Reduces staleness from 0-5s to <100ms during topology changes.
 
 Worker goroutines are started with `context.Context` propagation; shutdown is cooperative via `context.Cancel()`.
 
@@ -668,12 +672,31 @@ Worker goroutines are started with `context.Context` propagation; shutdown is co
 
 LoRa is advisory-only by design, so radio failures should degrade gracefully without crashing the daemon. The system must detect failures, operate without LoRa, and attempt recovery.
 
-**Failure Detection:**
+**Entropy Audit at Startup (v0.3 critical security):**
 
-1. **Persistent I/O errors**: Track consecutive failures on `PacketRadio.ReadFrom()` / `WriteTo()`
+Before first LoRa transmission or nonce generation, daemon MUST verify CSPRNG entropy:
+
+1. **Blocking read from `/dev/random`** (or `getrandom(GRND_RANDOM)` syscall):
+   - Read 32 bytes from `/dev/random` at daemon init (blocks until kernel entropy pool initialized)
+   - On embedded devices without hardware RNG, this may block 10-30s on first boot (acceptable delay for security)
+   - Log INFO: "Waiting for kernel entropy pool initialization..."
+
+2. **Entropy pool check** (Linux-specific):
+   - Read `/proc/sys/kernel/random/entropy_avail`
+   - If <128 bits available, log WARNING: "Low entropy detected; nonce generation may be predictable"
+   - Require ≥128 bits before proceeding with any cryptographic operations
+
+3. **Automatic key rotation trigger on reboot detection**:
+   - Compare current uptime (`/proc/uptime`) vs last-known uptime from persistent storage
+   - If reboot detected (uptime < last_uptime), initiate key rotation immediately to mitigate any nonce-reuse window
+
+**Failure Detection (v0.3 with exponential backoff):**
+
+1. **Persistent I/O errors with backoff**: Track consecutive failures on `PacketRadio.ReadFrom()` / `WriteTo()`
    - Threshold: 10 consecutive errors within 30 seconds = radio declared failed
    - Error types considered fatal: `ENODEV`, `EIO`, `ECONNRESET` (device disconnected)
    - Transient errors (e.g., `EAGAIN`, `ETIMEDOUT`) do not increment counter
+   - **Exponential backoff on RX errors**: If `ReadFrom()` returns error, sleep for `min(2^consecutive_errors × 100ms, 10s)` before retry. Reset counter on successful read. Prevents CPU thrashing during error storms.
 
 2. **Health check**: If no successful RX/TX in 5 minutes, attempt test transmission
    - Send low-priority PING frame; if TX fails, increment failure counter
