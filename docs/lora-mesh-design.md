@@ -148,7 +148,12 @@ BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, ne
 **Encryption:**
 - Algorithm: ChaCha20-Poly1305 (AEAD)
 - Key: `HKDF-SHA256(MESH_KEY, salt="beacon-v1", info="encryption", length=32)`
-- Nonce: 12 bytes = 96-bit random value generated via `crypto/rand` per frame (stored in frame)
+- Nonce: 12 bytes = `HMAC-SHA256(MESH_KEY, NodeID || reboot_counter || frame_seq || crypto/rand(8_bytes))[:12]` (hybrid construction)
+  - `reboot_counter`: 32-bit counter stored in persistent storage (NVRAM/flash), incremented on every daemon boot
+  - `frame_seq`: 16-bit frame sequence number from common header
+  - `crypto/rand(8_bytes)`: 64-bit random entropy per frame
+  - **Rationale**: Ensures nonce uniqueness even if CSPRNG fails or resets on reboot; reboot counter prevents nonce reuse across power cycles
+  - **Storage**: Reboot counter persisted to `/var/lib/conspiracyd/reboot_counter` (atomic write-rename); survives firmware updates
 - Overhead: +16 bytes (Poly1305 authentication tag) + 12 bytes (nonce)
 
 **Plaintext payload structure (before encryption):**
@@ -159,29 +164,31 @@ BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, ne
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |              SSID Length (8)   |   SSID (≤32 bytes)          |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|  Lat (32-bit fixed-point, 1e-5 deg resolution, optional)      |
+|  Lat (32-bit fixed-point, 1e-5 deg resolution)                |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|  Lon (32-bit fixed-point, optional)                           |
+|  Lon (32-bit fixed-point)                                     |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
+
+**Note**: GPS fields (Lat/Lon) are always present (8 bytes total). If GPS disabled (Capabilities bit 7 = 0), fields are filled with zeros. This normalizes all BEACON ciphertexts to the same length (48 bytes plaintext), preventing traffic analysis via frame length. Privacy improvement from v0.2: observers cannot infer which nodes have GPS enabled.
 
 **Encrypted frame structure (on-wire):**
 
 ```
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                  Nonce (96 bits / 12 bytes)                   |
-|                    (random, from crypto/rand)                 |
+|        (hybrid construction: HMAC of reboot/seq/rand)         |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|            Ciphertext (variable, ≤40 bytes typical)           |
+|            Ciphertext (48 bytes fixed length)                 |
 |                   (encrypted payload above)                   |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |             Poly1305 Tag (128 bits / 16 bytes)                |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                  HMAC-SHA256 truncated (64 bits)              |
+|                HMAC-SHA256 truncated (96 bits / 12 bytes)     |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-Total encrypted BEACON: 12-byte header + 12-byte nonce + ~40-byte ciphertext + 16-byte tag + 8-byte HMAC = ~88 bytes typical (well within 222-byte LoRa limit).
+Total encrypted BEACON: 12-byte header + 12-byte nonce + 48-byte ciphertext + 16-byte tag + 12-byte HMAC = **100 bytes** (well within 222-byte LoRa limit; +12 bytes vs v0.2).
 
 **Security properties:**
 - Confidentiality: Only mesh members with `MESH_KEY` can decrypt
