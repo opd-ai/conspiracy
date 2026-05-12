@@ -1,6 +1,6 @@
 # LoRa-Assisted Mesh Networking Platform — Technical Design Document
 
-> **Status:** Draft v0.2  
+> **Status:** Draft v0.3  
 > **Date:** 2026-05-12  
 > **Repository:** opd-ai/conspiracy  
 > **Language:** Go (≥ 1.22)
@@ -28,6 +28,8 @@ This document specifies a **zero-configuration, community-owned layer-2 mesh net
 Any in-range device running the daemon joins the mesh automatically: it listens for LoRa beacons, associates with the strongest peer, and enrolls into the `batman-adv` layer-2 fabric. The LoRa link carries only compact routing hints, neighbor summaries, and device-discovery beacons — never bulk payload — keeping duty-cycle well within regional limits. A clean `HintProvider`/`HintConsumer` interface allows future layer-3 overlays (cjdns, Yggdrasil, or custom protocols) to consume the same hint stream without modifying the core daemon. The design favors existing, permissively-licensed Go libraries, avoids libp2p and web frameworks, and is structured to scale across large geographic deployments with many nodes.
 
 **v0.2 Security and Resilience Enhancements:** This revision addresses critical security and scalability findings from design review, including: 64-bit HMAC authentication, RFC 6479 anti-replay windows, proof-of-work JOIN_REQ rate limiting, encrypted BEACON payloads, bounded peer tables with LRU eviction, global duty-cycle enforcement, OGM rate limiting, goroutine leak prevention, LoRa radio failure recovery, and key rotation protocol design.
+
+**v0.3 Production-Readiness and Scale Hardening:** This revision implements all P0-P3 findings from comprehensive design review, including: hybrid nonce construction with persistent reboot counter, entropy audit at startup, multi-frequency LoRa zoning for 10³+ nodes, explicit 5,000-node architectural limits with federation guidance, partition rejoin OGM storm mitigation, reduced ROUTE_HINT TTL with probabilistic forwarding, NodeID collision detection, 96-bit HMAC truncation, REKEY replay prevention, tiered peer storage, netlink multicast route updates, LoRa RX error backoff, PoW timestamp inclusion, fixed-length BEACON padding, JOIN_ACK BSSID inclusion, and adaptive HintBus consumer buffers.
 
 ---
 
@@ -146,7 +148,13 @@ BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, ne
 **Encryption:**
 - Algorithm: ChaCha20-Poly1305 (AEAD)
 - Key: `HKDF-SHA256(MESH_KEY, salt="beacon-v1", info="encryption", length=32)`
-- Nonce: 12 bytes = 96-bit random value generated via `crypto/rand` per frame (stored in frame)
+- Nonce: 12 bytes = `HMAC-SHA256(MESH_KEY, NodeID || reboot_counter || frame_seq || crypto/rand(8_bytes))[:12]` (hybrid construction)
+  - `reboot_counter`: 32-bit counter stored in persistent storage (NVRAM/flash), incremented on every daemon boot
+  - `frame_seq`: 16-bit frame sequence number from common header
+  - `crypto/rand(8_bytes)`: 64-bit random entropy per frame
+  - **Rationale**: Ensures nonce uniqueness even if CSPRNG fails or resets on reboot; reboot counter prevents nonce reuse across power cycles
+  - **Assumption**: `crypto/rand` must produce varying output (not constant). If CSPRNG completely fails (constant output), nonces repeat after `frame_seq` wraps (~65k frames). Entropy audit at startup (§5.5) detects this failure mode before first transmission.
+  - **Storage**: Reboot counter persisted to `/var/lib/conspiracyd/reboot_counter` (atomic write-rename); survives firmware updates
 - Overhead: +16 bytes (Poly1305 authentication tag) + 12 bytes (nonce)
 
 **Plaintext payload structure (before encryption):**
@@ -155,31 +163,39 @@ BEACON frames contain sensitive metadata (GPS coordinates, node capabilities, ne
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 | Capabilities (8) |  Channel (8)  | RSSI Avg (8, signed) |Rsvd(8)|
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|              SSID Length (8)   |   SSID (≤32 bytes)          |
+|              SSID Length (8)   |   SSID (32 bytes, padded)   |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|  Lat (32-bit fixed-point, 1e-5 deg resolution, optional)      |
+|  Lat (32-bit fixed-point, 1e-5 deg resolution)                |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|  Lon (32-bit fixed-point, optional)                           |
+|  Lon (32-bit fixed-point)                                     |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
+
+**Fixed-length padding scheme (v0.3 traffic analysis resistance):**
+- SSID field is **always 32 bytes** on-wire (padded with zeros if actual SSID is shorter)
+- SSID Length field indicates actual SSID length (1-32); receiver truncates padding after decryption
+- GPS fields (Lat/Lon) are always present (8 bytes total); filled with zeros if GPS disabled (Capabilities bit 7 = 0)
+- **Total plaintext size: 4 + 1 + 32 + 8 = 45 bytes** (fixed for all BEACONs)
+- Rationale: Normalizes all BEACON ciphertexts to same length, preventing traffic analysis via frame length
+- Privacy improvement from v0.2: observers cannot infer SSID length or whether GPS is enabled
 
 **Encrypted frame structure (on-wire):**
 
 ```
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |                  Nonce (96 bits / 12 bytes)                   |
-|                    (random, from crypto/rand)                 |
+|        (hybrid construction: HMAC of reboot/seq/rand)         |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|            Ciphertext (variable, ≤40 bytes typical)           |
+|            Ciphertext (45 bytes fixed length)                 |
 |                   (encrypted payload above)                   |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 |             Poly1305 Tag (128 bits / 16 bytes)                |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                  HMAC-SHA256 truncated (64 bits)              |
+|                HMAC-SHA256 truncated (96 bits / 12 bytes)     |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-Total encrypted BEACON: 12-byte header + 12-byte nonce + ~40-byte ciphertext + 16-byte tag + 8-byte HMAC = ~88 bytes typical (well within 222-byte LoRa limit).
+Total encrypted BEACON: 12-byte header + 12-byte nonce + 45-byte ciphertext + 16-byte tag + 12-byte HMAC = **97 bytes** (well within 222-byte LoRa limit; +9 bytes vs v0.2).
 
 **Security properties:**
 - Confidentiality: Only mesh members with `MESH_KEY` can decrypt
@@ -197,9 +213,9 @@ Total encrypted BEACON: 12-byte header + 12-byte nonce + ~40-byte ciphertext + 1
 | 4 | batman-adv enrolled |
 | 3–0 | Reserved |
 
-### 3.4 ROUTE_HINT Frame Payload (≤ 108 bytes)
+### 3.4 ROUTE_HINT Frame Payload (≤ 64 bytes)
 
-Each ROUTE_HINT encodes up to **6 neighbor entries** (≈ 16 bytes each). TTL is strictly limited to prevent amplification attacks.
+Each ROUTE_HINT encodes up to **6 neighbor entries** (8 bytes each). TTL is strictly limited to prevent amplification attacks.
 
 ```
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -208,14 +224,27 @@ Each ROUTE_HINT encodes up to **6 neighbor entries** (≈ 16 bytes each). TTL is
 | [Neighbor NodeID (32)] [RSSI (8, signed)] [Hops (8)] [Pad16] |
 |  ... repeated Neighbor Count times ...                        |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                HMAC-SHA256 truncated (64 bits)                |
+|              HMAC-SHA256 truncated (96 bits / 12 bytes)       |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-**Anti-amplification constraints:**
+**Size calculation:**
+- Header: 4 bytes (Neighbor Count + Flags + TTL + Pad)
+- Per-neighbor entry: 8 bytes (NodeID 32-bit + RSSI 8-bit + Hops 8-bit + Pad 16-bit = 64 bits)
+- Max neighbors: 6 entries × 8 bytes = 48 bytes
+- HMAC: 12 bytes (96-bit truncation)
+- **Total payload: 4 + 48 + 12 = 64 bytes** (plus 12-byte common header on-wire = 76 bytes total frame)
+
+**Anti-amplification constraints (v0.3 hardening):**
 - `Neighbor Count` MUST be ≤ 6 (reject frames exceeding this)
-- `TTL` MUST be ≤ 3 on transmission (enforced at frame generation)
-- On receive: if `TTL > 3`, reject frame immediately (drop, log warning)
+- `TTL` MUST be ≤ **2** on transmission (reduced from 3; enforced at frame generation)
+  - Rationale: Limits worst-case amplification from 258× to ~42× (1 + 6 + 36)
+  - On receive: if `TTL > 2`, reject frame immediately (drop, log warning)
+- **Probabilistic forwarding**: Forward ROUTE_HINT with probability `P = 1 / (lora_peer_count + 1)`
+  - Node with 100 LoRa peers forwards only ~1% of received hints
+  - Breaks exponential amplification while maintaining hint propagation in sparse topologies
+  - Example: 10 peers → 9% forward probability; 50 peers → 2% probability
+  - Implementation: `if rand.Float64() < 1.0/(float64(loraPeerCount)+1.0)` then forward
 - On forward: decrement `TTL` before forwarding; drop when `TTL == 0`
 - Forwarding rate limit: max 1 forwarded hint per 10 seconds per node (token bucket)
 - Deduplication: maintain Bloom filter of `(NodeID, Seq)` pairs seen in last 60s; don't re-forward duplicates. Filter sized for expected load (e.g., 4 KB for ~1000 insertions at ~1% FP rate); actual FP rate depends on traffic volume.
@@ -224,12 +253,42 @@ Each ROUTE_HINT encodes up to **6 neighbor entries** (≈ 16 bytes each). TTL is
 
 **Regulatory limits (EU 868 MHz, Sub-Band 1):** 1% duty cycle → maximum 36 seconds on-air per hour at SF12/BW125 (time-on-air ≈ 1 s for 50-byte frame).
 
-| Frame Type | TX Interval | Notes |
-|------------|-------------|-------|
-| BEACON | 30 – 120 s (jittered ±20%) | Reduces collision probability |
-| ROUTE_HINT | On topology change, max 1/60 s | Debounced 5 s |
-| JOIN_REQ/ACK | On demand, ≤ 3 retries | Exponential back-off: 1 s, 2 s, 4 s |
-| PING/PONG | Only if Wi-Fi link not available | Last-resort |
+**Adaptive TX intervals for scale (v0.3):**
+
+| Frame Type | TX Interval (base) | Adaptive Scaling | Notes |
+|------------|-------------------|------------------|-------|
+| BEACON | 30 – 120 s (jittered ±20%) | `interval = 60s × (1 + peer_count / 100)` capped at 600s | At >100 peers, beacon every 10 min instead of 60s (10× reduction) |
+| ROUTE_HINT | On topology change, max 1/60 s | Debounced 5 s; increase to 30s if churn rate >10 events/sec | Prevents hint storms during partition rejoin |
+| JOIN_REQ/ACK | On demand, ≤ 3 retries | Exponential back-off: 1 s, 2 s, 4 s | — |
+| PING/PONG | Only if Wi-Fi link not available | — | Last-resort |
+
+**Multi-Frequency Zoning for 10³+ Node Deployments:**
+
+To prevent duty-cycle saturation at scale, deployments exceeding 250 nodes per geographic area MUST implement frequency zoning:
+
+1. **Frequency allocation**: Partition nodes into zones using 3-4 non-overlapping LoRa frequencies:
+   - EU 868 MHz: 868.1 / 868.3 / 868.5 MHz (150 kHz spacing)
+   - US 915 MHz: 915.2 / 915.6 / 916.0 / 916.4 MHz (400 kHz spacing)
+   - AS 923 MHz: 923.2 / 923.4 MHz (200 kHz spacing)
+
+2. **Zone assignment**: Hash-based deterministic assignment: `zone = NodeID % num_frequencies`
+   - Ensures geographically random distribution (adjacent nodes unlikely to share frequency)
+   - No coordination required; self-organizing
+
+3. **Bridge nodes**: Nodes at zone boundaries (detect >10% peers on different frequency) operate dual-frequency:
+   - Allocate 50% duty-cycle budget per frequency
+   - Forward critical frames (JOIN_ACK, BEACON) between frequencies
+   - Do NOT forward ROUTE_HINT across frequencies (amplification risk)
+
+4. **SF auto-selection**: In high-density zones (>100 visible peers), switch to SF7 (60ms ToA, 6× bandwidth efficiency)
+   - Accept reduced range (0.5 km vs 3 km urban)
+   - Compensate with higher node density
+   - Fallback to SF10 if peer count drops <20 (sparse deployment)
+
+5. **Deployment guidance**: For 1,000-node deployment:
+   - 4 frequency zones × 250 nodes/zone
+   - ~20 bridge nodes (8% overhead) at zone edges
+   - Aggregate duty-cycle: 4× reduction (9s/hour per frequency vs 36s aggregate)
 
 **Global Duty-Cycle Budget Enforcement:**
 
@@ -237,9 +296,9 @@ To prevent regulatory violations, the daemon implements a centralized duty-cycle
 
 1. **Sliding window tracker**: Maintain 1-hour sliding window of transmitted frames with time-on-air (ToA) calculations
 2. **ToA calculation**: Use Semtech formula based on SF, BW, payload length:
-   - SF12/BW125/50-byte frame ≈ 1.0s
-   - SF10/BW125/50-byte frame ≈ 370ms
-   - SF7/BW125/50-byte frame ≈ 60ms
+   - SF12/BW125/100-byte frame ≈ 1.8s
+   - SF10/BW125/100-byte frame ≈ 620ms
+   - SF7/BW125/100-byte frame ≈ 100ms
 3. **Pre-transmit check**: Before any TX, verify: `sum(ToA, last_hour) + this_ToA ≤ DUTY_CYCLE_LIMIT`
    - Default: `DUTY_CYCLE_LIMIT = 36s` (1% for EU 868 MHz)
    - Configurable per region: US 915 MHz = 4% (144s/hour), AS 433 MHz = 1% (36s/hour)
@@ -260,9 +319,16 @@ To prevent regulatory violations, the daemon implements a centralized duty-cycle
 
 1. **Shared mesh key** (`MESH_KEY`, 256-bit): provisioned out-of-band (QR code, NFC tap, or manual entry). This is the same key used for 802.11s AMPE.
 
-2. **Per-frame HMAC-SHA256, truncated to 64 bits**: `HMAC-SHA256(MESH_KEY, header || payload)[0:8]`. A 64-bit truncated HMAC provides 2^64 (~18 quintillion) possible values, making brute-force attacks computationally infeasible while using only 8 bytes per frame (3.6% of 222-byte LoRa budget). This is a significant security upgrade from 32-bit truncation, which could be brute-forced within hours on modern hardware.
+2. **Per-frame HMAC-SHA256, truncated to 96 bits**: `HMAC-SHA256(MESH_KEY, header || payload)[0:12]`. A 96-bit truncated HMAC provides 2^96 security level (~79 octillion possible values), with 2^48 birthday attack resistance (~281 trillion attempts), making long-term brute-force attacks computationally infeasible while using only 12 bytes per frame (5.4% of 222-byte LoRa budget). This is a significant security upgrade from v0.2's 64-bit truncation.
 
-3. **Sequence number with RFC 6479-style anti-replay window** (16-bit rolling): Prevents replay attacks while accommodating out-of-order LoRa packet delivery (20-40% typical loss rate). Each node maintains:
+3. **NodeID collision detection and pinning** (v0.3): FNV-1a-32 NodeID hash creates 2^32 ID space with birthday collision probability at ~0.01% for 10³ nodes. To detect and mitigate collisions:
+   - **First-contact pinning**: On first HMAC-validated frame from a NodeID, store `(NodeID, HMAC_suffix)` where `HMAC_suffix = HMAC[8:12]` (last 4 bytes)
+   - **Collision detection**: If same NodeID seen with different HMAC_suffix, increment `node_id_collision_detected` metric and log WARNING with both HMAC suffixes
+   - **Collision handling**: During KEY_ID rotation (legitimate key change), HMAC_suffix changes are expected; clear pinning on KEY_ID transition
+   - **Storage**: Pinning map bounded to peer table size (10k entries × 8 bytes = 80 KB overhead)
+   - **Trade-off**: Reduces NodeID fluidity (nodes cannot easily change MAC without appearing as attacker), but prevents impersonation via collision exploitation
+
+4. **Sequence number with RFC 6479-style anti-replay window** (16-bit rolling): Prevents replay attacks while accommodating out-of-order LoRa packet delivery (20-40% typical loss rate). Each node maintains:
    - **Last accepted sequence** (`last_seq`) per NodeID
    - **128-bit replay bitmap** covering `[last_seq - 127, last_seq]` window
    - Acceptance rules:
@@ -274,15 +340,19 @@ To prevent regulatory violations, the daemon implements a centralized duty-cycle
    - NodeID entries evicted after 10 minutes of inactivity (bounded memory)
    - Bitmap overhead: ~16 bytes per active peer (~1 KB for 64 concurrent peers)
 
-4. **Key rotation support** (v1.1): To enable recovery from key compromise without network rebuild:
+5. **Key rotation with replay prevention** (v0.3): To enable recovery from key compromise without network rebuild:
    - Each key has 4-byte `KEY_ID = HMAC-SHA256(MESH_KEY, "key-id")[0:4]`
    - `KEY_ID` is present in the common header (§3.2) of all frame types, allowing receivers to select the correct key before HMAC verification
-   - Key rotation via encrypted LoRa `REKEY` frame: `ChaCha20Poly1305_Encrypt(OLD_KEY, NEW_KEY || NEW_KEY_ID || VALID_AFTER_TIMESTAMP)` with random nonce
+   - **REKEY frame structure**: `ChaCha20Poly1305_Encrypt(OLD_KEY, NEW_KEY || NEW_KEY_ID || VALID_AFTER_TIMESTAMP || REKEY_GENERATION)` with 12-byte random nonce
+     - `REKEY_GENERATION`: 64-bit monotonic counter (increments on each key rotation)
+     - Stored persistently in `/var/lib/conspiracyd/rekey_generation` (atomic write-rename)
+     - Nodes reject REKEY frames with `generation ≤ last_seen_generation` (prevents replay of old REKEY frames)
    - Nodes accept frames authenticated with old or new key during 24-hour transition period
    - After transition, old key expires; compromised devices using old key ejected
    - New nodes provision latest key; key rotation is backward-compatible
+   - **Anti-replay**: Replaying captured REKEY frame months later is prevented by generation check
 
-5. **No per-node public keys** in v1.0: Adding lightweight ECDH (Curve25519) session layer deferred to v2 as optional extension for deployments requiring per-node authentication.
+6. **No per-node public keys** in v1.0: Adding lightweight ECDH (Curve25519) session layer deferred to v2 as optional extension for deployments requiring per-node authentication.
 
 > **Note:** Sybil attacks cannot be fully prevented with a shared key alone. Rate limiting, proof-of-work, and resource quotas (§4.1, §5.4) provide practical Sybil resistance while preserving open-join. §4.3 discusses the trust model and its limits.
 
@@ -317,22 +387,29 @@ New Device                    LoRa Channel              Existing Peer
 
 2. **BEACON validation:** Validate HMAC and decrypt payload using `MESH_KEY`. Discard if authentication fails (wrong network or corrupted frame).
 
-3. **JOIN_REQ with Proof-of-Work:** New node sends `JOIN_REQ` to the peer with highest RSSI. To prevent JOIN_REQ floods (F-SEC-002), the request includes proof-of-work:
-   - **PoW requirement**: Find `nonce` such that `SHA256(NodeID || nonce || challenge)[0:2] == 0x0000` (16-bit difficulty)
-   - **Challenge source**: Use `BEACON.Seq` from the peer's most recent BEACON as the challenge (prevents precomputation, no clock dependency)
+3. **JOIN_REQ with Proof-of-Work (v0.3 hardened):** New node sends `JOIN_REQ` to the peer with highest RSSI. To prevent JOIN_REQ floods, the request includes proof-of-work:
+   - **PoW requirement**: Find `nonce` such that `SHA256(NodeID || nonce || BEACON.Seq || BEACON.Timestamp)[0:2] == 0x0000` (16-bit difficulty)
+   - **Challenge source**: Use both `BEACON.Seq` AND `BEACON.Timestamp` from the peer's most recent BEACON as the challenge
+     - Including timestamp prevents precomputation attacks (challenge changes every 30-120s with new BEACON)
+     - Attacker cannot precompute nonces for all possible Seq values because Timestamp is unpredictable
    - **Cost**: ~65k hash attempts, ~10ms on ARM CPU, ~200µs on x86 (negligible for legitimate joins)
-   - **Benefit**: Spamming 1000 JOIN_REQ requires ~10 seconds of CPU, making floods impractical
-   - **Validation**: Peer verifies PoW using its own recent BEACON sequence numbers (accepts last 10 BEACONs to handle timing); reject if invalid
+   - **Benefit**: Spamming 1000 JOIN_REQ requires ~10 seconds of CPU; precomputation cost is 16× higher (must recompute every BEACON interval)
+   - **Validation**: Peer verifies PoW using its own recent BEACON sequence numbers and timestamps (accepts last 10 BEACONs to handle timing); reject if invalid
 
-4. **JOIN_ACK with Rate Limiting:** Peer enforces per-NodeID quotas before responding:
+4. **JOIN_ACK with Rate Limiting and BSSID (v0.3 optimized):** Peer enforces per-NodeID quotas before responding:
    - **Token bucket**: 3 JOIN_REQ per hour per NodeID, burst=1
    - **Bounded cache**: Store quota state in LRU map (max 1024 entries, evict oldest on overflow)
    - **Silently drop** requests exceeding quota (no response → attacker gets no amplification)
-   - Peer responds with `JOIN_ACK` containing Wi-Fi SSID, BSSID, channel, and **network identifier** (`NetID` = HMAC-SHA256(`MESH_KEY`, `"netid"`)[:4])
+   - Peer responds with `JOIN_ACK` containing:
+     - Wi-Fi SSID (≤32 bytes)
+     - **BSSID** (6 bytes, MAC address of peer's mesh interface) — NEW in v0.3
+     - Channel (1 byte)
+     - **NetID** (4 bytes: HMAC-SHA256(`MESH_KEY`, `"netid"`)[:4])
    - `MESH_KEY` itself is **never transmitted over LoRa**; `NetID` confirms peer is on same network
    - New node, which already has `MESH_KEY` provisioned out-of-band, verifies `NetID` locally
+   - **BSSID inclusion benefit**: Eliminates need for nl80211 BSS scan (saves ~400ms join latency); node directly configures 802.11s interface with known BSSID
 
-5. **802.11s peering:** New node configures `wpa_supplicant` (or `hostapd` in mesh mode) with received parameters and initiates `AMPE` (Authenticated Mesh Peering Exchange) using `MESH_KEY` as the PMK seed.
+5. **802.11s peering:** New node configures `wpa_supplicant` (or `hostapd` in mesh mode) with received parameters (SSID, BSSID, channel) and initiates `AMPE` (Authenticated Mesh Peering Exchange) using `MESH_KEY` as the PMK seed. With BSSID provided, skip BSS scan step — total join latency reduced from ~600ms to <200ms.
 
 6. **batman-adv enrollment:** Daemon calls `batctl if add <mesh_iface>` via netlink. The kernel module begins flooding OGM packets; routing table converges within seconds.
 
@@ -578,26 +655,30 @@ The daemon is structured around a set of long-running goroutines communicating v
    - Alert if >1000 goroutines (indicates leak)
    - Expose `goroutine_count` gauge metric
 
-**Shared State Protection:**
+**Shared State Protection (v0.3 with tiered storage and OGM storm mitigation):**
 
 | State | Protection | Bounded Size | Eviction Policy |
 |-------|-----------|--------------|-----------------|
-| **Peer table** (`map[uint32]PeerInfo`) | Sharded `sync.RWMutex` (16 shards by `NodeID & 0xF`) | Max 10,000 entries | LRU by last-frame-received timestamp; evict after 24h inactivity |
+| **Peer table (tiered)** | Sharded `sync.RWMutex` (16 shards by `NodeID & 0xF`) | Active: 1,000 entries; Passive: 9,000 entries | **Tiered storage**: Active peers (full metadata: 128 bytes/peer) promoted on recent RX/TX (<5 min); Passive peers (minimal: 16 bytes = NodeID + last-seen) for inactive nodes. LRU eviction after 24h (active) or 1h (passive) inactivity. Memory: Active 128 KB + Passive 144 KB = 272 KB total for 10k peers (vs 1.28 MB flat) |
 | **Route table** (batman-adv OGM cache) | `sync.Mutex` | Max 10,000 originators | LRU by last-OGM-received; evict entries with seq# deviation >1000 |
-| **OGM rate limiter** | `sync.Map` of token buckets | Bounded by peer table size | Per-originator: 10 OGM/sec, burst=20; drop excess |
+| **OGM rate limiter (with burst allowance)** | `sync.Map` of token buckets | Bounded by peer table size | Per-originator: 10 OGM/sec, burst=20 (normal); **During partition rejoin** (detect: peer count +50% within 10s): temporarily increase burst to 50 for 60s, then reset. Drop excess. |
+| **OGM rejoin coordinator** | `sync.Mutex` on global state | Single instance | **Staggered re-injection**: If churn rate >10 events/sec, add per-node random jitter (0-5s) before broadcasting first OGM to new partition; reduces convergence storm from 250k OGMs to ~50k over 30s window |
 | **Anti-replay windows** | `sync.Map` of bitmaps | 128-bit bitmap × active peers (~1 KB for 64 peers) | Evict NodeID entries after 10 min inactivity |
 | **JOIN_REQ quotas** | `sync.Map` of token buckets | Max 1024 entries (LRU) | Per-NodeID: 3 req/hour, burst=1; evict oldest on overflow |
+| **NodeID collision pins** (v0.3) | `sync.Map` of HMAC suffixes | Max 10,000 entries (peer table size) | Store `(NodeID, HMAC_suffix)` on first contact; 8 bytes/entry = 80 KB overhead. Clear on KEY_ID rotation. |
 | **LoRa TX queue** | `chan TxRequest` (buffered 16) | 16 pending frames | Priority-based: drop LOW before MED before HIGH |
 | **LoRa RX queue** | `chan Frame` (buffered 64) | 64 frames (~16 KB) | Drop oldest on overflow (head-drop policy) |
 | **LoRa dedup cache** | `sync.Mutex` on LRU map | 512 entries (4 KB) | LRU by frame timestamp; TTL 60s |
-| **HintBus consumer channels** | `chan RoutingHint` per consumer | 16 hints per consumer | Drop hint if consumer channel full (non-blocking send) |
+| **HintBus consumer channels** | `chan RoutingHint` per consumer | **Adaptive sizing** (v0.3): Profile consumer latency at startup; size = `latency_ms × expected_hint_rate × 2`, capped at 256 | Drop hint if consumer channel full (non-blocking send); if drop rate >50% over 60s, log ERROR and trigger consumer degraded mode |
 | **Config** (read-only after init) | No lock needed | — | Loaded once at start |
 
 **Async RX Pattern (F-PERF-001):** LoRa RX is fully decoupled from frame processing. The radio always returns to ready state within ~1ms, ensuring no frame loss due to processing delays.
 
-**Non-Blocking HintBus (F-RES-002):** Each HintConsumer gets a dedicated buffered channel (cap=16). Bus uses `select` with 100ms timeout when sending; slow consumers cannot block others.
+**Frame Serialization Optimization (v0.3 guidance):** Marshal/unmarshal operations should use pre-allocated buffer pools (`sync.Pool` with 256-byte buffers) to avoid heap allocations in hot path. Profile allocation rate (`go test -benchmem`) before optimizing; target <1000 allocs/sec. Consider zero-copy serialization via `unsafe.Slice` for header structs if profiling shows GC overhead >1% CPU.
 
-**batman-adv Netlink Optimization:** Route table refreshed every 5 seconds (not per-OGM). Use `NLM_F_DUMP` with incremental updates where supported by `vishvananda/netlink`.
+**Non-Blocking HintBus (F-RES-002):** Each HintConsumer gets a dedicated buffered channel (adaptive sizing in v0.3). Bus uses `select` with non-blocking send; slow consumers cannot block others.
+
+**batman-adv Netlink Optimization (v0.3 event-driven):** Route table updates via netlink multicast notifications (`RTNLGRP_BATMAN_ADV`) instead of periodic polling. Subscribe to routing table change events at startup; receive incremental updates with <100ms latency. Fallback to 5-second polling if multicast unsupported by kernel/library. Reduces staleness from 0-5s to <100ms during topology changes.
 
 Worker goroutines are started with `context.Context` propagation; shutdown is cooperative via `context.Cancel()`.
 
@@ -605,12 +686,31 @@ Worker goroutines are started with `context.Context` propagation; shutdown is co
 
 LoRa is advisory-only by design, so radio failures should degrade gracefully without crashing the daemon. The system must detect failures, operate without LoRa, and attempt recovery.
 
-**Failure Detection:**
+**Entropy Audit at Startup (v0.3 critical security):**
 
-1. **Persistent I/O errors**: Track consecutive failures on `PacketRadio.ReadFrom()` / `WriteTo()`
+Before first LoRa transmission or nonce generation, daemon MUST verify CSPRNG entropy:
+
+1. **Blocking read from `/dev/random`** (or `getrandom(GRND_RANDOM)` syscall):
+   - Read 32 bytes from `/dev/random` at daemon init (blocks until kernel entropy pool initialized)
+   - On embedded devices without hardware RNG, this may block 10-30s on first boot (acceptable delay for security)
+   - Log INFO: "Waiting for kernel entropy pool initialization..."
+
+2. **Entropy pool check** (Linux-specific):
+   - Read `/proc/sys/kernel/random/entropy_avail`
+   - If <128 bits available, log WARNING: "Low entropy detected; nonce generation may be predictable"
+   - Require ≥128 bits before proceeding with any cryptographic operations
+
+3. **Automatic key rotation trigger on reboot detection**:
+   - Compare current uptime (`/proc/uptime`) vs last-known uptime from persistent storage
+   - If reboot detected (uptime < last_uptime), initiate key rotation immediately to mitigate any nonce-reuse window
+
+**Failure Detection (v0.3 with exponential backoff):**
+
+1. **Persistent I/O errors with backoff**: Track consecutive failures on `PacketRadio.ReadFrom()` / `WriteTo()`
    - Threshold: 10 consecutive errors within 30 seconds = radio declared failed
    - Error types considered fatal: `ENODEV`, `EIO`, `ECONNRESET` (device disconnected)
    - Transient errors (e.g., `EAGAIN`, `ETIMEDOUT`) do not increment counter
+   - **Exponential backoff on RX errors**: If `ReadFrom()` returns error, sleep for `min(2^consecutive_errors × 100ms, 10s)` before retry. Reset counter on successful read. Prevents CPU thrashing during error storms.
 
 2. **Health check**: If no successful RX/TX in 5 minutes, attempt test transmission
    - Send low-priority PING frame; if TX fails, increment failure counter
@@ -923,11 +1023,12 @@ WantedBy=multi-user.target
 
 | Risk | Severity | Likelihood | Mitigation |
 |------|----------|-----------|------------|
-| Regulatory LoRa duty-cycle violation | High | Medium | Strict TX scheduler with enforcement (§3.5); configurable per-region limits |
-| batman-adv route oscillation in dense deployments | Medium | Medium | Tune OGM interval; use batman-adv v2 (B.A.T.M.A.N. V) for more stable metric |
-| LoRa collision in high-density deployments (> 50 nodes in range) | Medium | High | Frequency hopping across 3 sub-bands; increase TX jitter window |
-| Key management complexity (MESH_KEY distribution) | High | High | QR provisioning, NFC tap; key rotation protocol included (§3.6) |
-| batman-adv kernel module unavailable on target | Medium | Low | **Fallback to 802.11s-only mode** (F-RES-003): Daemon probes for batman-adv at startup (`modprobe batman-adv; test -d /sys/module/batman_adv`). If absent: (1) log warning and set `batman_mode=false`, (2) skip batman-adv netlink calls, (3) disable batman-adv OGM listener, (4) continue with 802.11s HWMP routing only, (5) ROUTE_HINT frames still processed for layer-3 HintConsumers (cjdns/Yggdrasil), (6) document limitation: no layer-2 broadcast forwarding across non-adjacent peers. |
+| **ARCHITECTURAL LIMIT: batman-adv scaling beyond 5,000 nodes (v0.3)** | **Critical** | **High (at scale)** | **HARD LIMIT**: Maximum supported deployment size is **5,000 nodes per autonomous mesh**. batman-adv OGM flooding generates ~640 KB/sec overhead at 10⁴ nodes (~50% of 802.11n channel capacity); mesh becomes unusable for data traffic. **Mitigation for larger deployments**: (1) **Federation architecture**: Deploy multiple independent mesh islands (each ≤5k nodes) with unique `MESH_KEY` and SSID, connected via Yggdrasil overlay routing. HintConsumers propagate routes between islands; batman-adv OGMs stay local. (2) Document explicitly in deployment guide: "Maximum: 5,000 nodes. For 10k+ deployments, use federated mesh islands with layer-3 interconnect." (3) Proactive protocol: Consider switching to AODV-based reactive routing at 10³+ scale in v2.0 (deferred). This is a fundamental protocol limit, not a bug. |
+| Regulatory LoRa duty-cycle violation | High | Medium (mitigated in v0.3) | Strict TX scheduler with enforcement (§3.5); multi-frequency zoning for 10³+ nodes (§3.5); configurable per-region limits |
+| batman-adv route oscillation in dense deployments | Medium | Medium | Tune OGM interval; use batman-adv v2 (B.A.T.M.A.N. V) for more stable metric; OGM storm mitigation during partition rejoin (§5.4) |
+| LoRa collision in high-density deployments (> 50 nodes in range) | Medium | Medium (reduced in v0.3) | Multi-frequency zoning across 3-4 sub-bands (§3.5); adaptive SF selection; increased TX jitter window |
+| Key management complexity (MESH_KEY distribution) | High | High | QR provisioning, NFC tap; key rotation protocol with replay prevention included (§3.6) |
+| **batman-adv kernel module unavailable on target** | Medium | Low | **Fallback to 802.11s-only mode** (F-RES-003): Daemon probes for batman-adv at startup (`modprobe batman-adv; test -d /sys/module/batman_adv`). If absent: (1) log warning and set `batman_mode=false`, (2) skip batman-adv netlink calls, (3) disable batman-adv OGM listener, (4) continue with 802.11s HWMP routing only, (5) ROUTE_HINT frames still processed for layer-3 HintConsumers (cjdns/Yggdrasil), (6) document limitation: no layer-2 broadcast forwarding across non-adjacent peers. **TESTING REQUIREMENT**: Integration test suite MUST validate fallback mode: (1) Create test environment with kernel compiled without `CONFIG_BATMAN_ADV`, (2) Verify daemon starts successfully, (3) Log contains "batman-adv unavailable; operating in 802.11s-only mode" WARNING, (4) Test 3-node triangle topology with packet forwarding, (5) Verify `batman_adv_available` metric = `false`, (6) Document HWMP limitations in deployment guide (no L2 broadcast beyond 1 hop, higher convergence latency). |
 | Go cross-compilation gap (CGo dependencies) | Low | Low | Only pure-Go or periph.io libraries selected (§5.1) |
 | nl80211 kernel API changes | Low | Low | Depend on `mdlayher/wifi` which tracks upstream nl80211 |
 
