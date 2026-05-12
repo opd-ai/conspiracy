@@ -17,7 +17,11 @@ Conspiracy is designed for deployment on OpenWrt routers and Linux single-board 
 - LoRa hardware: SX127x or SX126x chipset via SPI, UART, or USB interface
 - Wi-Fi adapter supporting 802.11s mesh mode
 
-### Building
+### Implementation Status
+
+This repository currently contains the design specification in `docs/lora-mesh-design.md`. The Go implementation will follow the architecture and build instructions outlined below.
+
+### Building (Reference Implementation)
 
 ```bash
 git clone https://github.com/opd-ai/conspiracy.git
@@ -110,7 +114,7 @@ systemctl start conspiracyd
 - **Multi-Frequency Zoning** - Supports 3-4 LoRa sub-bands for dense deployments (250+ nodes per area)
 - **Layer-3 Plugin System** - HintConsumer interface enables integration with overlay networks (Yggdrasil, cjdns) without core modifications
 - **Automatic Failover** - Mesh continues operating if LoRa control channel fails; batman-adv OGM protocol maintains routing
-- **Key Rotation Protocol** - REKEY frames enable surgical key updates without network rebuild
+- **Key Rotation Protocol** - REKEY frames enable network-wide key updates with replay prevention (requires operational isolation for compromised node ejection)
 - **Hardware Abstraction** - Supports SPI, UART, and USB-Serial LoRa modules (SX127x/SX126x chipsets)
 
 ---
@@ -129,7 +133,7 @@ systemctl start conspiracyd
 
 ### Dependencies
 
-The project uses pure-Go libraries with permissive licenses:
+The design specification recommends pure-Go libraries with permissive licenses:
 
 - `go.bug.st/serial` (BSD-3-Clause) - Serial and USB-Serial LoRa module support
 - `periph.io/x/conn/v3` (Apache-2.0) - SPI hardware abstraction for HAT modules
@@ -160,9 +164,9 @@ Configure LoRa frequency based on regulatory region:
 
 The daemon enforces regional LoRa duty-cycle limits:
 
-- **EU**: 1% duty cycle (36 seconds/hour at SF10)
-- **US**: FCC Part 15 unlicensed operation
-- Strict TX scheduler prevents regulatory violations
+- **EU 868 MHz**: 1% duty cycle (36 seconds/hour)
+- **US 915 MHz**: 4% duty cycle (144 seconds/hour)
+- Strict TX scheduler with priority queue prevents regulatory violations
 
 ---
 
