@@ -37,13 +37,13 @@
 ## Critical Findings
 
 ### 1. **No Implementation Exists**
-The repository contains only design documentation (1,312-line specification) with **zero executable code**. This represents a 100% implementation gap across all stated features. The README claims "Implementation Status: This repository currently contains the design specification in `docs/lora-mesh-design.md`. The Go implementation will follow..." but provides no timeline or starter code.
+The repository contains only design documentation (~1.3k-line specification) with **zero executable code**. This represents a 100% implementation gap across all stated features. The README claims "Implementation Status: This repository currently contains the design specification in `docs/lora-mesh-design.md`. The Go implementation will follow..." but provides no timeline or starter code.
 
 ### 2. **LoRa Driver Availability Risk**
-Web research reveals **no existing pure-Go LoRa drivers for SX127x/SX126x chipsets**. The design specifies `periph.io/x/conn/v3` for SPI abstraction, but this library provides only low-level SPI/GPIO primitives - not device-specific LoRa register control, packet encoding/decoding, or IRQ handling. The project will require **implementing a complete LoRa radio driver from scratch** (estimated 3,000+ lines of protocol code based on comparable C++ RadioHead library complexity).
+No maintained pure-Go LoRa driver for SX127x/SX126x chipsets was found as of 2026-05-13 (searched: pkg.go.dev for "sx127x", "sx126x", "lora spi"; periph.io device registry; GitHub topic search "golang lora driver"). The design specifies `periph.io/x/conn/v3` for SPI abstraction, but [periph.io documentation](https://periph.io/) confirms this library provides only low-level SPI/GPIO primitives - not device-specific LoRa register control, packet encoding/decoding, or IRQ handling. The project will require **implementing a complete LoRa radio driver from scratch** (estimated 3,000+ lines of protocol code based on comparable C++ RadioHead library complexity).
 
-### 3. **Batman-adv Scalability Claims Unsupported**
-The design claims support for 5,000 nodes but community documentation (open-mesh.org FAQ, Freifunk network reports) indicates batman-adv is "probably not wise" above ~1,000 nodes in a single broadcast domain due to OGM flooding overhead. The specification's claim of ~640 KB/sec overhead at 10,000 nodes (~50% of 802.11n channel capacity) aligns with community warnings but contradicts the "5,000 node maximum" as a safe operational ceiling. Actual field-tested limit is likely 500-1,000 nodes before instability.
+### 3. **Batman-adv Scalability Claims Require Validation**
+The design claims support for 5,000 nodes but community documentation suggests caution at scale. The [open-mesh.org FAQ](https://www.open-mesh.org/projects/open-mesh/wiki/FAQ) (accessed 2026-05-13) states: "It is not possible to give exact numbers … hundreds of nodes are not rare but thousands in a single broadcast domain is probably not wise." Real-world deployments (Freifunk community networks, documented in mailing list archives) typically report issues above 500-1,000 nodes per contiguous mesh on commodity hardware. The specification's claim of ~640 KB/sec OGM overhead at 10,000 nodes (~50% of 802.11n channel capacity) aligns with these warnings. The 5,000-node architectural ceiling requires field validation to confirm stability; conservative operational limit is likely 500-1,000 nodes on embedded hardware (OpenWrt routers) before federation becomes necessary.
 
 ### 4. **Security Implementation Complexity**
 The design includes production-grade security features (hybrid nonce construction, persistent reboot counter, entropy audit, PoW anti-flood) that are non-trivial to implement correctly:
@@ -73,7 +73,7 @@ The design specifies permissive-license dependencies but lacks verification:
 **Goal**: Create basic project structure, build system, and prove LoRa driver feasibility
 
 - [ ] **Initialize Go module** (`go.mod`) with Go 1.22+ and declare core dependencies
-  - **Validation**: `go mod verify` succeeds; `go mod graph` shows only permissive licenses (MIT, Apache-2.0, BSD-3-Clause)
+  - **Validation**: `go mod verify` succeeds; license verification via `go-licenses check --allowed_licenses=MIT,Apache-2.0,BSD-3-Clause ./...` (or equivalent tooling) confirms only permissive licenses
   - **Files**: Create `go.mod`, document dependency rationale
   - **Effort**: 1 day
 
@@ -83,7 +83,7 @@ The design specifies permissive-license dependencies but lacks verification:
   - **Effort**: 2 days
 
 - [ ] **Research and prototype LoRa SPI driver** for SX127x chipset
-  - **Validation**: Proof-of-concept code reads DeviceVersion register (0x42) via `periph.io/x/conn/v3/spi` and matches expected value (0x12 for SX1276)
+  - **Validation**: Proof-of-concept code reads RegVersion register (0x42) via `periph.io/x/conn/v3/spi` and matches expected chip-specific value: 0x12 (SX1276), 0x11 (SX1272), 0x22 (SX1277), 0x21 (SX1278), or 0x24 (SX1279) per Semtech datasheets
   - **Files**: Create `internal/lora/sx127x.go` with register read/write primitives
   - **Effort**: 5 days (includes datasheet study, SPI protocol implementation, IRQ handling)
   - **Risk**: This is the highest-risk dependency - if pure-Go LoRa driver proves infeasible, entire project architecture collapses
@@ -303,8 +303,8 @@ Correct implementation of hybrid nonce construction, entropy audit, and reboot c
 **Mitigation**:
 - Engage cryptography expert for design review before implementation (estimated cost: 4-8 hours consulting)
 - Implement comprehensive fuzz testing for crypto subsystem (use `go test -fuzz`)
-- Add startup self-test: generate 10k nonces, verify uniqueness with bloom filter, abort if collision detected
-- Log all crypto operations at TRACE level during initial releases for post-mortem analysis
+- Add startup self-test: generate 10k nonces, store in map[string]bool, verify zero collisions (deterministic check, no false positives); abort with CRITICAL error if collision detected
+- Log crypto operations at TRACE level during initial releases for post-mortem analysis; **explicitly redact secrets** (MESH_KEY, derived keys, nonces, plaintext) - log only operation type, timestamp, NodeID, and success/failure status
 
 ### 4. **No Field Testing** (High)
 Design is based on theoretical analysis without hardware validation. Actual LoRa range, duty-cycle behavior, and interference patterns unknown.
