@@ -66,6 +66,15 @@ type JOIN_ACKPayload struct {
 	Status  uint8 // 0 = success, 1 = rejected
 }
 
+// REKEYPayload represents the plaintext content of a REKEY frame (before encryption with OLD_KEY).
+// Total size: 32 + 4 + 4 + 8 = 48 bytes (before ChaCha20-Poly1305 adds 16-byte tag).
+type REKEYPayload struct {
+	NewKey          [32]byte // New 256-bit mesh key
+	NewKeyID        uint32   // HMAC-SHA256(NEW_KEY, "key-id")[0:4]
+	ValidAfter      uint32   // Unix timestamp when new key becomes valid (24-hour transition)
+	RekeyGeneration uint64   // Monotonic counter to prevent replay attacks
+}
+
 // MarshalHeader serializes a frame header to bytes
 func MarshalHeader(hdr *Header) []byte {
 	buf := make([]byte, HeaderSize)

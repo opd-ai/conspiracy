@@ -223,7 +223,7 @@ The design specifies permissive-license dependencies but lacks verification:
   - **Files**: `internal/batman/storm_mitigation.go`
   - **Effort**: 3 days
 
-- [ ] **Implement key rotation protocol** (REKEY frames)
+- [x] **Implement key rotation protocol** (REKEY frames)
   - **Validation**: Integration test rotates MESH_KEY across 3 nodes; verifies replay prevention (monotonic generation counter), old key invalidation after 24h
   - **Files**: `internal/crypto/rekey.go`
   - **Effort**: 6 days
@@ -261,12 +261,12 @@ The design specifies permissive-license dependencies but lacks verification:
   - **Files**: `CONTRIBUTING.md`, includes: build instructions, test runner commands, code style guide, PR template
   - **Effort**: 1 day
 
-- [ ] **Write deployment guide** with hardware recommendations
+- [x] **Write deployment guide** with hardware recommendations
   - **Validation**: Community member can replicate deployment on GL.iNet router or Raspberry Pi using guide
   - **Files**: `docs/deployment-guide.md`, includes: hardware profiles, OpenWrt compilation, LoRa module wiring, MESH_KEY provisioning
   - **Effort**: 2 days
 
-- [ ] **Write federation guide** for >5,000 node deployments
+- [x] **Write federation guide** for >5,000 node deployments
   - **Validation**: Guide explains mesh island architecture, Yggdrasil overlay interconnect, layer-3 route propagation
   - **Files**: `docs/federation.md`
   - **Effort**: 2 days
