@@ -156,8 +156,7 @@ Configure LoRa frequency based on regulatory region:
 
 ### Scaling Limits
 
-- **Maximum nodes per mesh island**: 1,000 nodes (field-tested ceiling; architecture accommodates up to 5,000 nodes with tuning, requires validation). For larger deployments, use federated mesh islands with layer-3 overlay interconnect (see docs/federation.md).
-- **Larger deployments**: Use federated mesh islands with layer-3 overlay interconnect
+- **Maximum nodes per mesh island**: 200-250 nodes per mesh island (academic/production consensus as of 2026; larger deployments require federated mesh islands with layer-3 overlay interconnect). The architecture can accommodate up to 1,000 nodes with high-performance hardware and tuning (field validation pending). For deployments beyond this scale, use federated mesh islands with layer-3 overlay interconnect (see docs/federation.md).
 - **Dense area support**: Multi-frequency zoning supports 250+ nodes per geographic area
 
 ### Duty-Cycle Compliance

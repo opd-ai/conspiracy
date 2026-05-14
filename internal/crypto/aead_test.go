@@ -81,7 +81,7 @@ func TestAEAD_TamperedCiphertext(t *testing.T) {
 	ciphertext[5] ^= 0x01
 
 	// Decrypt should fail
-	_, err = Decrypt(meshKey, nonce, ciphertext)
+	_, err = Decrypt(meshKey, nonceArray, ciphertext)
 	if err == nil {
 		t.Fatal("Decrypt should fail with tampered ciphertext")
 	}
@@ -112,14 +112,17 @@ func TestAEAD_WrongKey(t *testing.T) {
 		t.Fatalf("Failed to generate nonce: %v", err)
 	}
 
+	var nonceArray [12]byte
+	copy(nonceArray[:], nonce)
+
 	// Encrypt with key1
-	ciphertext, err := Encrypt(meshKey1, nonce, plaintext)
+	ciphertext, err := Encrypt(meshKey1, nonceArray, plaintext)
 	if err != nil {
 		t.Fatalf("Encrypt failed: %v", err)
 	}
 
 	// Decrypt with key2 should fail
-	_, err = Decrypt(meshKey2, nonce, ciphertext)
+	_, err = Decrypt(meshKey2, nonceArray, ciphertext)
 	if err == nil {
 		t.Fatal("Decrypt should fail with wrong key")
 	}
@@ -163,10 +166,13 @@ func TestAEAD_NonceUniqueness(t *testing.T) {
 	const iterations = 10000
 
 	for i := 0; i < iterations; i++ {
-		nonce, err := ng.Generate()
+		nonceSlice, err := ng.Generate()
 		if err != nil {
 			t.Fatalf("Generate failed at iteration %d: %v", i, err)
 		}
+
+		var nonce [12]byte
+		copy(nonce[:], nonceSlice)
 
 		if seen[nonce] {
 			t.Fatalf("Nonce collision detected at iteration %d: %x", i, nonce)
