@@ -1,0 +1,35 @@
+# Conspiracy Configuration - Minimal UDP Testing
+# Development mode: Uses UDP sockets instead of LoRa hardware
+# This allows testing protocol logic without physical hardware
+# Run two instances with different ports for multi-node testing
+
+[lora]
+device     = "udp"                  # Use UDP test stub instead of real LoRa
+udp_listen = "127.0.0.1:8001"       # Local UDP port for this node
+udp_peer   = "127.0.0.1:8002"       # Remote UDP port of peer node
+mesh_key   = "hex:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+# Simulated radio parameters (not used by UDP backend, but required by config parser)
+frequency_mhz = 868.1
+spreading     = 10
+bandwidth_khz = 125
+
+[wifi]
+mesh_interface = "mesh0"            # Virtual mesh interface (requires mac80211_hwsim)
+ssid           = "conspiracy-test"
+channel        = 6
+
+[batman]
+interface = "bat0"
+enabled   = false                   # Disable for UDP testing (no kernel module required)
+
+[plugins]
+yggdrasil = false
+cjdns     = false
+
+# To run a second node for testing:
+# 1. Copy this file to config-node2.toml
+# 2. Change udp_listen to "127.0.0.1:8002"
+# 3. Change udp_peer to "127.0.0.1:8001"
+# 4. Run: ./bin/conspiracyd -config examples/config-minimal.toml
+# 5. Run: ./bin/conspiracyd -config examples/config-node2.toml

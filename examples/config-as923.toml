@@ -1,0 +1,24 @@
+# Conspiracy Configuration - Asia 923 MHz
+# Regional: Asia-Pacific (923 MHz ISM band)
+# Duty Cycle: 1% (36 seconds per hour, similar to EU)
+# Spreading Factor: SF9 (~1,760 bps, ~3.5 km range)
+
+[lora]
+device        = "/dev/spidev0.0"    # SPI device for SX127x LoRa module
+frequency_mhz = 923.0               # AS923 ISM band
+spreading     = 9                   # SF9: compromise between range and data rate
+bandwidth_khz = 125                 # Standard 125 kHz bandwidth
+mesh_key      = "hex:CHANGEME_32_BYTE_HEX_KEY_HERE"  # Generate with: openssl rand -hex 32
+
+[wifi]
+mesh_interface = "wlan0"            # Wi-Fi interface for 802.11s mesh
+ssid           = "conspiracy-mesh"  # Mesh SSID (change for isolated networks)
+channel        = 6                  # 2.4 GHz channel (1-13 in Asia)
+
+[batman]
+interface = "bat0"                  # batman-adv interface
+enabled   = true                    # Set false for 802.11s-only mode
+
+[plugins]
+yggdrasil = false                   # Enable for federation / gateway role
+cjdns     = false                   # Enable for cjdns overlay integration

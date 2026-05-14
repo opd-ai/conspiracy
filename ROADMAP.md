@@ -72,12 +72,12 @@ The design specifies permissive-license dependencies but lacks verification:
 ### Priority 1: Establish Minimum Viable Implementation Foundation
 **Goal**: Create basic project structure, build system, and prove LoRa driver feasibility
 
-- [ ] **Initialize Go module** (`go.mod`) with Go 1.22+ and declare core dependencies
+- [x] **Initialize Go module** (`go.mod`) with Go 1.22+ and declare core dependencies
   - **Validation**: `go mod verify` succeeds; license verification via `go-licenses check --allowed_licenses=MIT,Apache-2.0,BSD-3-Clause ./...` (or equivalent tooling) confirms only permissive licenses
   - **Files**: Create `go.mod`, document dependency rationale
   - **Effort**: 1 day
 
-- [ ] **Implement basic project structure** matching design §5.2
+- [x] **Implement basic project structure** matching design §5.2
   - **Validation**: Directory structure exists with placeholder files; `go build ./...` succeeds (even with empty functions)
   - **Files**: Create `cmd/conspiracyd/main.go`, `internal/{lora,wifi,batman,hint,autojoin,crypto,config}/` with stub `*.go` files
   - **Effort**: 2 days
@@ -93,7 +93,7 @@ The design specifies permissive-license dependencies but lacks verification:
   - **Files**: `internal/lora/driver.go` (interface), `internal/lora/driver_test.go` (UDP stub tests)
   - **Effort**: 3 days
 
-- [ ] **Set up CI/CD pipeline** (GitHub Actions)
+- [x] **Set up CI/CD pipeline** (GitHub Actions)
   - **Validation**: `.github/workflows/ci.yml` runs on every PR: `go build`, `go test ./...`, `go vet`, cross-compilation for `GOARCH=mipsle,arm64,riscv64`
   - **Files**: Create `.github/workflows/ci.yml`
   - **Effort**: 1 day

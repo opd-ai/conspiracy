@@ -156,7 +156,7 @@ Configure LoRa frequency based on regulatory region:
 
 ### Scaling Limits
 
-- **Maximum nodes per mesh**: 5,000 nodes (batman-adv architectural limit)
+- **Maximum nodes per mesh island**: 1,000 nodes (field-tested ceiling; architecture accommodates up to 5,000 nodes with tuning, requires validation). For larger deployments, use federated mesh islands with layer-3 overlay interconnect (see docs/federation.md).
 - **Larger deployments**: Use federated mesh islands with layer-3 overlay interconnect
 - **Dense area support**: Multi-frequency zoning supports 250+ nodes per geographic area
 

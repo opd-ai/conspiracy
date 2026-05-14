@@ -1,0 +1,24 @@
+# Conspiracy Configuration - US 915 MHz
+# Regional: United States (915 MHz ISM band)
+# Duty Cycle: 4% (144 seconds per hour, more relaxed than EU)
+# Spreading Factor: SF7 (~5,470 bps, ~2 km range, optimized for throughput)
+
+[lora]
+device        = "/dev/spidev0.0"    # SPI device for SX127x LoRa module
+frequency_mhz = 915.0               # US ISM band
+spreading     = 7                   # SF7: higher data rate for 4% duty cycle
+bandwidth_khz = 125                 # Standard 125 kHz bandwidth
+mesh_key      = "hex:CHANGEME_32_BYTE_HEX_KEY_HERE"  # Generate with: openssl rand -hex 32
+
+[wifi]
+mesh_interface = "wlan0"            # Wi-Fi interface for 802.11s mesh
+ssid           = "conspiracy-mesh"  # Mesh SSID (change for isolated networks)
+channel        = 6                  # 2.4 GHz channel (1-11 in US)
+
+[batman]
+interface = "bat0"                  # batman-adv interface
+enabled   = true                    # Set false for 802.11s-only mode
+
+[plugins]
+yggdrasil = false                   # Enable for federation / gateway role
+cjdns     = false                   # Enable for cjdns overlay integration

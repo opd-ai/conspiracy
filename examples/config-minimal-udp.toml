@@ -1,0 +1,52 @@
+# Conspiracy LoRa-Mesh Configuration - Minimal UDP Testing Profile
+# This configuration uses UDP sockets instead of LoRa hardware for local testing
+# No LoRa radio modules required - perfect for development and integration tests
+
+[lora]
+# UDP mode: use localhost sockets instead of hardware
+device        = "udp"
+udp_listen    = "127.0.0.1:8001"
+udp_peer      = "127.0.0.1:8002"
+
+# Frequency settings (ignored in UDP mode but required by parser)
+frequency_mhz = 868.1
+spreading     = 10
+bandwidth_khz = 125
+
+# 256-bit mesh encryption key (change for multi-node testing)
+# Node A: 127.0.0.1:8001 -> 8002
+# Node B: 127.0.0.1:8002 -> 8001
+mesh_key      = "hex:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+[wifi]
+# For testing without real Wi-Fi: use dummy interfaces
+# ip link add mesh0 type dummy
+# ip link set mesh0 up
+mesh_interface = "mesh0"
+ssid           = "test-mesh"
+channel        = 6
+
+[batman]
+# batman-adv can be disabled for minimal testing
+interface      = "bat0"
+enabled        = false
+
+[plugins]
+yggdrasil = false
+cjdns     = false
+
+[logging]
+# Verbose logging for debugging
+level  = "debug"
+format = "text"
+
+[metrics]
+enabled = true
+listen  = "127.0.0.1:9090"
+
+[discovery]
+# Faster intervals for local testing
+beacon_interval_base_sec = 10   # 10s BEACON interval
+ping_interval_sec        = 20   # 20s PING interval
+join_timeout_sec         = 5    # 5s JOIN_ACK timeout
+scan_duration_sec        = 10   # 10s scanning phase
