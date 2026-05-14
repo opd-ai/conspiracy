@@ -180,12 +180,12 @@ The design specifies permissive-license dependencies but lacks verification:
   - **Files**: `internal/hint/bus.go`, consumer registration, fan-out broadcast
   - **Effort**: 4 days
 
-- [ ] **Implement Yggdrasil HintConsumer plugin**
+- [x] **Implement Yggdrasil HintConsumer plugin**
   - **Validation**: Integration test receives ROUTE_HINT, extracts NodeID→IP mapping, injects as Yggdrasil peer via admin API
   - **Files**: `plugins/yggdrasil/consumer.go`
   - **Effort**: 4 days (includes Yggdrasil admin API integration)
 
-- [ ] **Implement cjdns HintConsumer plugin**
+- [x] **Implement cjdns HintConsumer plugin**
   - **Validation**: Integration test receives ROUTE_HINT, injects as cjdns peer via admin interface
   - **Files**: `plugins/cjdns/consumer.go`
   - **Effort**: 4 days
@@ -242,7 +242,7 @@ The design specifies permissive-license dependencies but lacks verification:
   - **Files**: `test/integration/three_node_test.go`, `test/integration/docker-compose.yml`
   - **Effort**: 5 days
 
-- [ ] **Write security regression tests** for nonce reuse prevention
+- [x] **Write security regression tests** for nonce reuse prevention
   - **Validation**: Test suite verifies entropy audit failure detection, reboot counter persistence failure handling, continuous CSPRNG validation
   - **Files**: `internal/crypto/security_test.go`
   - **Effort**: 3 days
