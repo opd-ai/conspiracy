@@ -28,10 +28,10 @@ const (
 
 	// FederationGuidanceThreshold triggers federation guidance at 4,000 originators (80% capacity).
 	FederationGuidanceThreshold = 4000
-
-	// OriginatorTablePath is the path to batman-adv's originator table in sysfs.
-	OriginatorTablePath = "/sys/kernel/debug/batman_adv/bat0/originators"
 )
+
+// OriginatorTablePath is the path to batman-adv's originator table in sysfs (mutable for testing).
+var OriginatorTablePath = "/sys/kernel/debug/batman_adv/bat0/originators"
 
 var (
 	// Prometheus metrics
@@ -149,6 +149,11 @@ func (sl *ScaleLimiter) readOriginatorTable() (int, error) {
 	}
 
 	return count, nil
+}
+
+// ReadOriginatorTableForTest exposes readOriginatorTable for testing.
+func (sl *ScaleLimiter) ReadOriginatorTableForTest() (int, error) {
+	return sl.readOriginatorTable()
 }
 
 // enforceScaleLimits implements the scale limit enforcement logic.

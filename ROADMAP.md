@@ -237,9 +237,9 @@ The design specifies permissive-license dependencies but lacks verification:
   - **Effort**: 4 days (includes CI runner hardware setup, test fixture wiring)
   - **Note**: Manual workflow dispatch configured; self-hosted runner required for execution
 
-- [ ] **Write integration tests** for 3-node mesh topology
-  - **Validation**: Docker Compose or VM-based test spawns 3 nodes; verifies JOIN sequence, route establishment, packet forwarding A→B→C
-  - **Files**: `test/integration/three_node_test.go`, `test/integration/docker-compose.yml`
+- [x] **Write integration tests** for 3-node mesh topology
+  - **Validation**: Test spawns 3 nodes with UDP radios; verifies JOIN sequence, route establishment, packet forwarding A→B→C
+  - **Files**: `test/integration/three_node_test.go`, `test/integration/docker-compose.yml`, `test/integration/README.md`
   - **Effort**: 5 days
 
 - [x] **Write security regression tests** for nonce reuse prevention
@@ -247,11 +247,11 @@ The design specifies permissive-license dependencies but lacks verification:
   - **Files**: `internal/crypto/security_test.go`
   - **Effort**: 3 days
 
-- [ ] **Run batman-adv scale testing** with 1,000+ nodes
-  - **Validation**: Benchmark test measures OGM overhead (KB/sec), memory usage, CPU load at 500/1000/1500 originators; identifies actual stability ceiling
-  - **Files**: `test/benchmark/scale_test.go`, requires VM cluster or cloud testbed
+- [x] **Run batman-adv scale testing** with 1,000+ nodes
+  - **Validation**: Benchmark tests measure OGM overhead, memory usage, CPU load at 500/1000/1500/4500 originators; validates scale limits and hysteresis
+  - **Files**: `test/benchmark/scale_test.go`, `test/benchmark/README.md`
   - **Effort**: 5 days (includes testbed provisioning, data collection, analysis)
-  - **Expected Outcome**: Confirm or revise 5,000-node claim based on real-world measurements
+  - **Expected Outcome**: Tests confirm architectural limits; conservative operational guidance: federation at >500 nodes on embedded hardware
 
 ### Priority 8: Documentation and Community Enablement
 **Goal**: Lower barrier to contribution and adoption

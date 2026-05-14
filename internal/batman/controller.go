@@ -120,6 +120,11 @@ func (c *Controller) IsFallbackMode() bool {
 	return c.fallbackMode
 }
 
+// SetFallbackMode sets the fallback mode state (used for testing).
+func (c *Controller) SetFallbackMode(fallback bool) {
+	c.fallbackMode = fallback
+}
+
 // SubscribeOGMEvents starts listening for batman-adv originator messages via netlink multicast.
 // This is a placeholder for future originator count monitoring and scale limit enforcement.
 // The implementation monitors OGM events and maintains an originator count for the mesh.
