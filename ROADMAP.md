@@ -82,13 +82,13 @@ The design specifies permissive-license dependencies but lacks verification:
   - **Files**: Create `cmd/conspiracyd/main.go`, `internal/{lora,wifi,batman,hint,autojoin,crypto,config}/` with stub `*.go` files
   - **Effort**: 2 days
 
-- [ ] **Research and prototype LoRa SPI driver** for SX127x chipset
+- [x] **Research and prototype LoRa SPI driver** for SX127x chipset
   - **Validation**: Proof-of-concept code reads RegVersion register (0x42) via `periph.io/x/conn/v3/spi` and matches expected chip-specific value: 0x12 (SX1276), 0x11 (SX1272), 0x22 (SX1277), 0x21 (SX1278), or 0x24 (SX1279) per Semtech datasheets
   - **Files**: Create `internal/lora/sx127x.go` with register read/write primitives
   - **Effort**: 5 days (includes datasheet study, SPI protocol implementation, IRQ handling)
   - **Risk**: This is the highest-risk dependency - if pure-Go LoRa driver proves infeasible, entire project architecture collapses
 
-- [ ] **Implement PacketRadio interface with UDP test stub**
+- [x] **Implement PacketRadio interface with UDP test stub**
   - **Validation**: Unit tests use `net.UDPConn` as drop-in replacement for LoRa hardware; frame codec round-trip succeeds
   - **Files**: `internal/lora/driver.go` (interface), `internal/lora/driver_test.go` (UDP stub tests)
   - **Effort**: 3 days
@@ -101,27 +101,27 @@ The design specifies permissive-license dependencies but lacks verification:
 ### Priority 2: Implement Core Security Primitives
 **Goal**: Establish cryptographic foundation with correct nonce handling and entropy validation
 
-- [ ] **Implement persistent reboot counter** with atomic write-rename
+- [x] **Implement persistent reboot counter** with atomic write-rename
   - **Validation**: Integration test simulates filesystem failures (read-only mount, disk full); daemon refuses to start LoRa subsystem; logs CRITICAL error
   - **Files**: `internal/crypto/reboot_counter.go`, `internal/crypto/reboot_counter_test.go`
   - **Effort**: 4 days (includes failure handling, atomic write, recovery testing)
 
-- [ ] **Implement entropy audit** at daemon startup
+- [x] **Implement entropy audit** at daemon startup
   - **Validation**: Unit test mocks `crypto/rand` to return identical samples; entropy audit detects failure before first LoRa transmission
   - **Files**: `internal/crypto/entropy.go`, blocking read from `/dev/random`, continuous validation every 1,000 nonce generations
   - **Effort**: 3 days
 
-- [ ] **Implement hybrid nonce construction** for ChaCha20-Poly1305
+- [x] **Implement hybrid nonce construction** for ChaCha20-Poly1305
   - **Validation**: Unit test verifies nonce uniqueness across 100k frames; integration test verifies nonce doesn't repeat after daemon restart (reboot counter incremented)
   - **Files**: `internal/crypto/nonce.go`, HMAC-SHA256 of `NodeID || reboot_counter || frame_seq || crypto/rand(8_bytes)`
   - **Effort**: 3 days
 
-- [ ] **Implement ChaCha20-Poly1305 AEAD encryption** for BEACON frames
+- [x] **Implement ChaCha20-Poly1305 AEAD encryption** for BEACON frames
   - **Validation**: Round-trip test encrypts/decrypts BEACON payload; HMAC verification succeeds; tampered ciphertext rejected
   - **Files**: `internal/crypto/aead.go`, HKDF key derivation from MESH_KEY
   - **Effort**: 4 days
 
-- [ ] **Implement anti-replay window** (RFC 6479, 128-bit bitmap)
+- [x] **Implement anti-replay window** (RFC 6479, 128-bit bitmap)
   - **Validation**: Unit test accepts in-order frames, rejects replayed frames, handles out-of-order within window
   - **Files**: `internal/crypto/replay.go`
   - **Effort**: 2 days
@@ -129,7 +129,7 @@ The design specifies permissive-license dependencies but lacks verification:
 ### Priority 3: Implement LoRa Control Protocol
 **Goal**: Establish basic LoRa frame exchange (BEACON, JOIN_REQ/ACK)
 
-- [ ] **Implement LoRa frame codec** (marshal/unmarshal)
+- [x] **Implement LoRa frame codec** (marshal/unmarshal)
   - **Validation**: Round-trip test for all frame types (BEACON, JOIN_REQ, JOIN_ACK, ROUTE_HINT, PING/PONG); size verification (<= 222 bytes on-wire)
   - **Files**: `internal/lora/frame.go`, header parsing, payload serialization
   - **Effort**: 5 days
@@ -139,7 +139,7 @@ The design specifies permissive-license dependencies but lacks verification:
   - **Files**: `internal/lora/beacon.go`, duty-cycle token bucket scheduler
   - **Effort**: 4 days
 
-- [ ] **Implement PoW challenge** for JOIN_REQ anti-flood
+- [x] **Implement PoW challenge** for JOIN_REQ anti-flood
   - **Validation**: Unit test verifies SHA256 PoW validation (16-bit difficulty); timestamp freshness check (±300s tolerance)
   - **Files**: `internal/crypto/pow.go`
   - **Effort**: 3 days
@@ -152,17 +152,17 @@ The design specifies permissive-license dependencies but lacks verification:
 ### Priority 4: Integrate Wi-Fi and batman-adv
 **Goal**: Establish data plane connectivity
 
-- [ ] **Implement nl80211 interface** for 802.11s mesh join
+- [x] **Implement nl80211 interface** for 802.11s mesh join
   - **Validation**: Integration test on Linux VM with virtual Wi-Fi interfaces; mesh interface created, joined to SSID
   - **Files**: `internal/wifi/mesh.go`, uses `github.com/mdlayher/wifi`
   - **Effort**: 6 days (includes nl80211 API research, mesh mode parameter tuning)
 
-- [ ] **Implement batman-adv netlink controller**
+- [x] **Implement batman-adv netlink controller**
   - **Validation**: Integration test adds interface to `bat0`, verifies OGM emission via `batctl n` output
   - **Files**: `internal/batman/controller.go`, uses `github.com/vishvananda/netlink`
   - **Effort**: 5 days
 
-- [ ] **Implement batman-adv fallback detection** (802.11s-only mode)
+- [x] **Implement batman-adv fallback detection** (802.11s-only mode)
   - **Validation**: Integration test on system without `CONFIG_BATMAN_ADV`; daemon starts, logs WARNING, operates in 802.11s-only mode
   - **Files**: `internal/batman/fallback.go`
   - **Effort**: 3 days
@@ -175,7 +175,7 @@ The design specifies permissive-license dependencies but lacks verification:
 ### Priority 5: Layer-3 Extensibility (HintBus)
 **Goal**: Enable plugin integration for overlay networks
 
-- [ ] **Implement HintBus pub/sub** with adaptive consumer buffers
+- [x] **Implement HintBus pub/sub** with adaptive consumer buffers
   - **Validation**: Unit test with 3 consumers at different processing speeds; verifies buffer sizing, backpressure handling, no goroutine leaks
   - **Files**: `internal/hint/bus.go`, consumer registration, fan-out broadcast
   - **Effort**: 4 days
@@ -193,22 +193,22 @@ The design specifies permissive-license dependencies but lacks verification:
 ### Priority 6: Production Readiness
 **Goal**: Deployment tooling, monitoring, and resilience
 
-- [ ] **Implement TOML config parser** with validation
+- [x] **Implement TOML config parser** with validation
   - **Validation**: Unit test rejects invalid config (missing MESH_KEY, invalid frequency, TTL > 2); logs actionable error messages
   - **Files**: `internal/config/config.go`, uses `github.com/pelletier/go-toml/v2`
   - **Effort**: 2 days
 
-- [ ] **Implement Prometheus metrics exporter**
+- [x] **Implement Prometheus metrics exporter**
   - **Validation**: Integration test scrapes `/metrics` endpoint; verifies gauge availability: `lora_peer_count`, `batman_originator_count`, `lora_rssi_avg`, `duty_cycle_utilization`
   - **Files**: `cmd/conspiracyd/metrics.go`, uses `github.com/prometheus/client_golang`
   - **Effort**: 2 days
 
-- [ ] **Implement structured logging** with slog
+- [x] **Implement structured logging** with slog
   - **Validation**: Unit test verifies log level filtering, structured field output (JSON format), no sensitive data (MESH_KEY) logged
   - **Files**: Replace all `fmt.Printf` with `slog.Info/Warn/Error`
   - **Effort**: 2 days
 
-- [ ] **Create systemd unit file** and installation script
+- [x] **Create systemd unit file** and installation script
   - **Validation**: Manual test on Raspberry Pi; daemon starts on boot, survives crash (RestartSec=5s), logs to journald
   - **Files**: `deployments/systemd/conspiracyd.service`, `scripts/install.sh`
   - **Effort**: 1 day
@@ -256,7 +256,7 @@ The design specifies permissive-license dependencies but lacks verification:
 ### Priority 8: Documentation and Community Enablement
 **Goal**: Lower barrier to contribution and adoption
 
-- [ ] **Write CONTRIBUTING.md** with development workflow
+- [x] **Write CONTRIBUTING.md** with development workflow
   - **Validation**: New contributor can follow guide to build, test, and submit PR
   - **Files**: `CONTRIBUTING.md`, includes: build instructions, test runner commands, code style guide, PR template
   - **Effort**: 1 day
@@ -271,7 +271,7 @@ The design specifies permissive-license dependencies but lacks verification:
   - **Files**: `docs/federation.md`
   - **Effort**: 2 days
 
-- [ ] **Create example configurations** for EU/US/AS regions
+- [x] **Create example configurations** for EU/US/AS regions
   - **Validation**: Config files pass validation (`conspiracyd -config example.toml -validate`)
   - **Files**: `examples/config-eu868.toml`, `examples/config-us915.toml`, `examples/config-as923.toml`
   - **Effort**: 1 day

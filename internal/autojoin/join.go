@@ -154,73 +154,91 @@ func (fsm *FSM) handleScanning(ctx context.Context) error {
 		default:
 		}
 
-		// Receive frame with 1s timeout per iteration
-		frameCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
-		data, err := fsm.radio.Recv(frameCtx)
-		cancel()
-
-		if err != nil {
-			// Timeout or error - continue scanning
+		if err := fsm.receiveAndProcessBeacon(ctx); err != nil {
 			continue
 		}
-
-		// Parse frame
-		hdr, payload, err := lora.UnmarshalFrame(data)
-		if err != nil {
-			slog.Debug("Failed to parse frame", "error", err)
-			continue
-		}
-
-		// Only process BEACON frames
-		if hdr.FrameType != lora.FrameTypeBEACON {
-			continue
-		}
-
-		// Decrypt BEACON payload
-		plaintext, err := crypto.Decrypt(fsm.meshKey, hdr.Nonce, payload)
-		if err != nil {
-			slog.Debug("BEACON decryption failed (wrong MESH_KEY or tampered frame)", "error", err)
-			continue
-		}
-
-		// Unmarshal BEACON payload
-		beacon, err := lora.UnmarshalBEACONPayload(plaintext)
-		if err != nil {
-			slog.Debug("Failed to parse BEACON payload", "error", err)
-			continue
-		}
-
-		// Get RSSI for this frame
-		rssi, err := fsm.radio.RSSI()
-		if err != nil {
-			rssi = -128 // Unknown RSSI
-		}
-
-		// Extract SSID (trim null bytes)
-		ssid := string(bytes.TrimRight(beacon.SSID[:], "\x00"))
-
-		// Add peer to discovered list
-		peer := PeerInfo{
-			NodeID:       hdr.NodeID,
-			RSSI:         rssi,
-			SSID:         ssid,
-			BSSID:        beacon.BSSID,
-			Channel:      beacon.Channel,
-			Capabilities: beacon.Capabilities,
-			Timestamp:    hdr.Timestamp,
-		}
-		fsm.scannedPeers = append(fsm.scannedPeers, peer)
-
-		slog.Debug("BEACON received",
-			"node_id", hdr.NodeID,
-			"rssi", rssi,
-			"ssid", ssid,
-			"channel", beacon.Channel)
 	}
 
+	return fsm.transitionAfterScan(ctx)
+}
+
+// receiveAndProcessBeacon attempts to receive and process a single BEACON frame.
+func (fsm *FSM) receiveAndProcessBeacon(ctx context.Context) error {
+	frameCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	data, err := fsm.radio.Recv(frameCtx)
+	cancel()
+
+	if err != nil {
+		return err
+	}
+
+	hdr, payload, err := lora.UnmarshalFrame(data)
+	if err != nil {
+		slog.Debug("Failed to parse frame", "error", err)
+		return err
+	}
+
+	if hdr.FrameType != lora.FrameTypeBEACON {
+		return fmt.Errorf("not a BEACON frame")
+	}
+
+	beacon, err := fsm.decryptAndParseBeacon(hdr, payload)
+	if err != nil {
+		return err
+	}
+
+	fsm.addScannedPeer(hdr, beacon)
+	return nil
+}
+
+// decryptAndParseBeacon decrypts and unmarshals a BEACON payload.
+func (fsm *FSM) decryptAndParseBeacon(hdr *lora.Header, payload []byte) (*lora.BEACONPayload, error) {
+	plaintext, err := crypto.Decrypt(fsm.meshKey, hdr.Nonce, payload)
+	if err != nil {
+		slog.Debug("BEACON decryption failed (wrong MESH_KEY or tampered frame)", "error", err)
+		return nil, err
+	}
+
+	beacon, err := lora.UnmarshalBEACONPayload(plaintext)
+	if err != nil {
+		slog.Debug("Failed to parse BEACON payload", "error", err)
+		return nil, err
+	}
+
+	return beacon, nil
+}
+
+// addScannedPeer adds a discovered peer to the scan list.
+func (fsm *FSM) addScannedPeer(hdr *lora.Header, beacon *lora.BEACONPayload) {
+	rssi, err := fsm.radio.RSSI()
+	if err != nil {
+		rssi = -128
+	}
+
+	ssid := string(bytes.TrimRight(beacon.SSID[:], "\x00"))
+
+	peer := PeerInfo{
+		NodeID:       hdr.NodeID,
+		RSSI:         rssi,
+		SSID:         ssid,
+		BSSID:        beacon.BSSID,
+		Channel:      beacon.Channel,
+		Capabilities: beacon.Capabilities,
+		Timestamp:    hdr.Timestamp,
+	}
+	fsm.scannedPeers = append(fsm.scannedPeers, peer)
+
+	slog.Debug("BEACON received",
+		"node_id", hdr.NodeID,
+		"rssi", rssi,
+		"ssid", ssid,
+		"channel", beacon.Channel)
+}
+
+// transitionAfterScan transitions FSM state based on scan results.
+func (fsm *FSM) transitionAfterScan(ctx context.Context) error {
 	if len(fsm.scannedPeers) == 0 {
 		slog.Warn("No peers discovered, retrying scan...")
-		// Stay in SCANNING state, retry after short delay
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -229,7 +247,6 @@ func (fsm *FSM) handleScanning(ctx context.Context) error {
 		}
 	}
 
-	// Rank peers by RSSI (strongest first)
 	sort.Slice(fsm.scannedPeers, func(i, j int) bool {
 		return fsm.scannedPeers[i].RSSI > fsm.scannedPeers[j].RSSI
 	})
@@ -255,30 +272,42 @@ func (fsm *FSM) handleJoining(ctx context.Context) error {
 	peer := fsm.scannedPeers[0]
 	slog.Info("Sending JOIN_REQ", "peer", peer.NodeID, "attempt", fsm.joinAttempts+1)
 
-	// Send JOIN_REQ
 	if err := fsm.sendJoinRequest(ctx, peer); err != nil {
-		slog.Error("JOIN_REQ transmission failed", "error", err)
-		fsm.joinAttempts++
-		if fsm.joinAttempts >= fsm.maxAttempts {
-			slog.Warn("FSM: JOINING → FAILED (max attempts reached)")
-			fsm.state = StateFAILED
-		}
-		return nil
+		return fsm.handleJoinRequestFailure(err)
 	}
 
-	// Wait for JOIN_ACK (30s timeout)
 	ack, err := fsm.awaitJoinAck(ctx, 30*time.Second)
 	if err != nil {
-		slog.Warn("JOIN_ACK timeout", "error", err)
-		fsm.joinAttempts++
-		if fsm.joinAttempts >= fsm.maxAttempts {
-			slog.Warn("FSM: JOINING → FAILED (max attempts reached)")
-			fsm.state = StateFAILED
-		}
-		return nil
+		return fsm.handleJoinAckTimeout(err)
 	}
 
-	// Extract SSID from JOIN_ACK
+	return fsm.processJoinAckResponse(ack)
+}
+
+// handleJoinRequestFailure processes JOIN_REQ transmission errors.
+func (fsm *FSM) handleJoinRequestFailure(err error) error {
+	slog.Error("JOIN_REQ transmission failed", "error", err)
+	fsm.joinAttempts++
+	if fsm.joinAttempts >= fsm.maxAttempts {
+		slog.Warn("FSM: JOINING → FAILED (max attempts reached)")
+		fsm.state = StateFAILED
+	}
+	return nil
+}
+
+// handleJoinAckTimeout processes JOIN_ACK wait timeouts.
+func (fsm *FSM) handleJoinAckTimeout(err error) error {
+	slog.Warn("JOIN_ACK timeout", "error", err)
+	fsm.joinAttempts++
+	if fsm.joinAttempts >= fsm.maxAttempts {
+		slog.Warn("FSM: JOINING → FAILED (max attempts reached)")
+		fsm.state = StateFAILED
+	}
+	return nil
+}
+
+// processJoinAckResponse handles a received JOIN_ACK.
+func (fsm *FSM) processJoinAckResponse(ack *lora.JOIN_ACKPayload) error {
 	ssid := string(bytes.TrimRight(ack.SSID[:], "\x00"))
 	slog.Info("JOIN_ACK received", "ssid", ssid, "channel", ack.Channel, "status", ack.Status)
 
@@ -386,36 +415,43 @@ func (fsm *FSM) awaitJoinAck(ctx context.Context, timeout time.Duration) (*lora.
 		default:
 		}
 
-		// Receive frame with 1s timeout per iteration
-		frameCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
-		data, err := fsm.radio.Recv(frameCtx)
-		cancel()
-
+		ack, err := fsm.receiveJoinAckFrame(ctx)
 		if err != nil {
-			continue // Timeout or error - keep waiting
-		}
-
-		// Parse frame
-		hdr, payload, err := lora.UnmarshalFrame(data)
-		if err != nil {
-			slog.Debug("Failed to parse frame", "error", err)
 			continue
 		}
-
-		// Only process JOIN_ACK frames
-		if hdr.FrameType != lora.FrameTypeJOIN_ACK {
-			continue
+		if ack != nil {
+			return ack, nil
 		}
-
-		// Unmarshal JOIN_ACK payload
-		ack, err := lora.UnmarshalJOIN_ACKPayload(payload)
-		if err != nil {
-			slog.Debug("Failed to parse JOIN_ACK payload", "error", err)
-			continue
-		}
-
-		return ack, nil
 	}
 
 	return nil, fmt.Errorf("JOIN_ACK timeout after %v", timeout)
+}
+
+// receiveJoinAckFrame attempts to receive and parse a JOIN_ACK frame.
+func (fsm *FSM) receiveJoinAckFrame(ctx context.Context) (*lora.JOIN_ACKPayload, error) {
+	frameCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	data, err := fsm.radio.Recv(frameCtx)
+	cancel()
+
+	if err != nil {
+		return nil, err
+	}
+
+	hdr, payload, err := lora.UnmarshalFrame(data)
+	if err != nil {
+		slog.Debug("Failed to parse frame", "error", err)
+		return nil, err
+	}
+
+	if hdr.FrameType != lora.FrameTypeJOIN_ACK {
+		return nil, fmt.Errorf("not a JOIN_ACK frame")
+	}
+
+	ack, err := lora.UnmarshalJOIN_ACKPayload(payload)
+	if err != nil {
+		slog.Debug("Failed to parse JOIN_ACK payload", "error", err)
+		return nil, err
+	}
+
+	return ack, nil
 }

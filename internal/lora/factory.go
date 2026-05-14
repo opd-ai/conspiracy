@@ -29,60 +29,75 @@ type Config struct {
 func NewRadio(cfg Config) (PacketRadio, error) {
 	switch {
 	case cfg.Device == "udp":
-		if cfg.UDPListen == "" || cfg.UDPPeer == "" {
-			return nil, fmt.Errorf("UDP mode requires UDPListen and UDPPeer")
-		}
-		radio, err := NewUDPRadio(cfg.UDPListen, cfg.UDPPeer)
-		if err != nil {
-			return nil, err
-		}
-
-		// Configure parameters
-		if cfg.Frequency > 0 {
-			radio.SetFrequency(cfg.Frequency)
-		}
-		if cfg.SF > 0 {
-			radio.SetSpreadingFactor(cfg.SF)
-		}
-		if cfg.Bandwidth > 0 {
-			radio.SetBandwidth(cfg.Bandwidth)
-		}
-
-		return radio, nil
-
+		return createUDPRadio(cfg)
 	case strings.HasPrefix(cfg.Device, "/dev/spidev"):
-		radio, err := NewSX127xSPI(cfg.Device, cfg.ResetPin, cfg.DIO0Pin)
-		if err != nil {
-			return nil, err
-		}
-
-		// Configure parameters
-		if cfg.Frequency > 0 {
-			if err := radio.SetFrequency(cfg.Frequency); err != nil {
-				radio.Close()
-				return nil, err
-			}
-		}
-		if cfg.SF > 0 {
-			if err := radio.SetSpreadingFactor(cfg.SF); err != nil {
-				radio.Close()
-				return nil, err
-			}
-		}
-		if cfg.Bandwidth > 0 {
-			if err := radio.SetBandwidth(cfg.Bandwidth); err != nil {
-				radio.Close()
-				return nil, err
-			}
-		}
-
-		return radio, nil
-
+		return createSPIRadio(cfg)
 	case strings.HasPrefix(cfg.Device, "/dev/tty"):
-		// UART/USB-Serial support deferred to Phase 2
 		return nil, fmt.Errorf("UART/USB-Serial LoRa modules not yet implemented (device: %s)", cfg.Device)
-
 	default:
 		return nil, fmt.Errorf("unsupported device: %s", cfg.Device)
 	}
+}
+
+// createUDPRadio creates and configures a UDP radio for testing.
+func createUDPRadio(cfg Config) (PacketRadio, error) {
+	if cfg.UDPListen == "" || cfg.UDPPeer == "" {
+		return nil, fmt.Errorf("UDP mode requires UDPListen and UDPPeer")
+	}
+
+	radio, err := NewUDPRadio(cfg.UDPListen, cfg.UDPPeer)
+	if err != nil {
+		return nil, err
+	}
+
+	applyRadioConfig(radio, cfg)
+	return radio, nil
+}
+
+// createSPIRadio creates and configures an SPI-based LoRa radio.
+func createSPIRadio(cfg Config) (PacketRadio, error) {
+	radio, err := NewSX127xSPI(cfg.Device, cfg.ResetPin, cfg.DIO0Pin)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := applyAndValidateSPIConfig(radio, cfg); err != nil {
+		radio.Close()
+		return nil, err
+	}
+
+	return radio, nil
+}
+
+// applyRadioConfig sets frequency, SF, and bandwidth for UDP radios.
+func applyRadioConfig(radio *UDPRadio, cfg Config) {
+	if cfg.Frequency > 0 {
+		radio.SetFrequency(cfg.Frequency)
+	}
+	if cfg.SF > 0 {
+		radio.SetSpreadingFactor(cfg.SF)
+	}
+	if cfg.Bandwidth > 0 {
+		radio.SetBandwidth(cfg.Bandwidth)
+	}
+}
+
+// applyAndValidateSPIConfig sets and validates parameters for SPI radios.
+func applyAndValidateSPIConfig(radio *SX127xSPI, cfg Config) error {
+	if cfg.Frequency > 0 {
+		if err := radio.SetFrequency(cfg.Frequency); err != nil {
+			return err
+		}
+	}
+	if cfg.SF > 0 {
+		if err := radio.SetSpreadingFactor(cfg.SF); err != nil {
+			return err
+		}
+	}
+	if cfg.Bandwidth > 0 {
+		if err := radio.SetBandwidth(cfg.Bandwidth); err != nil {
+			return err
+		}
+	}
+	return nil
 }

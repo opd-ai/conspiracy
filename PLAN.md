@@ -19,7 +19,7 @@
 | Multi-Frequency Zoning (250+ nodes) | ❌ Missing | No — Deferred to v1.1 |
 | Layer-3 Plugin System (HintBus, Yggdrasil, cjdns) | ❌ Missing | No — Deferred to v1.1 |
 | 5,000-node scalability (batman-adv limits) | ❌ Missing | No — Deferred to v1.1 |
-| Production Monitoring (Prometheus, systemd) | ❌ Missing | No — Deferred to post-MVP |
+| Production Monitoring (Prometheus, systemd) | ⚠️ Partial (Prometheus metrics implemented) | Yes — Metrics complete, systemd deferred |
 
 **Overall: 2/12 goals fully achieved, 3/12 partially achieved (crypto foundation ~80%, LoRa driver functional, integration pending). This plan closes 4 critical gaps to achieve MVP: daemon integration, auto-join FSM, AEAD encryption, batman-adv controller.**
 

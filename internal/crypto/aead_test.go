@@ -5,6 +5,15 @@ import (
 	"testing"
 )
 
+func mustCreateRebootCounter(t *testing.T) *RebootCounter {
+	t.Helper()
+	rc, err := NewRebootCounter(t.TempDir())
+	if err != nil {
+		t.Fatalf("Failed to create reboot counter: %v", err)
+	}
+	return rc
+}
+
 func TestAEAD_RoundTrip(t *testing.T) {
 	meshKey := make([]byte, 32)
 	for i := range meshKey {
@@ -14,7 +23,7 @@ func TestAEAD_RoundTrip(t *testing.T) {
 	plaintext := []byte("This is a test BEACON payload with sensitive mesh topology data")
 
 	// Generate nonce
-	ng, err := NewNonceGenerator(meshKey, 12345, 1)
+	ng, err := NewNonceGenerator(meshKey, 12345, mustCreateRebootCounter(t))
 	if err != nil {
 		t.Fatalf("Failed to create nonce generator: %v", err)
 	}
@@ -59,7 +68,7 @@ func TestAEAD_TamperedCiphertext(t *testing.T) {
 
 	plaintext := []byte("Original message")
 
-	ng, err := NewNonceGenerator(meshKey, 12345, 1)
+	ng, err := NewNonceGenerator(meshKey, 12345, mustCreateRebootCounter(t))
 	if err != nil {
 		t.Fatalf("Failed to create nonce generator: %v", err)
 	}
@@ -102,7 +111,7 @@ func TestAEAD_WrongKey(t *testing.T) {
 
 	plaintext := []byte("Secret message")
 
-	ng, err := NewNonceGenerator(meshKey1, 12345, 1)
+	ng, err := NewNonceGenerator(meshKey1, 12345, mustCreateRebootCounter(t))
 	if err != nil {
 		t.Fatalf("Failed to create nonce generator: %v", err)
 	}
@@ -156,7 +165,7 @@ func TestAEAD_NonceUniqueness(t *testing.T) {
 		meshKey[i] = byte(i)
 	}
 
-	ng, err := NewNonceGenerator(meshKey, 12345, 1)
+	ng, err := NewNonceGenerator(meshKey, 12345, mustCreateRebootCounter(t))
 	if err != nil {
 		t.Fatalf("Failed to create nonce generator: %v", err)
 	}

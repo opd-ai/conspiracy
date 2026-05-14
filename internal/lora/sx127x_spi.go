@@ -265,39 +265,64 @@ func (r *SX127xSPI) Send(ctx context.Context, payload []byte) error {
 		return fmt.Errorf("payload too large: %d bytes (max 255)", len(payload))
 	}
 
-	// Set standby mode
+	if err := r.prepareTxMode(); err != nil {
+		return err
+	}
+
+	if err := r.writePayloadToFIFO(payload); err != nil {
+		return err
+	}
+
+	if err := r.startTransmission(); err != nil {
+		return err
+	}
+
+	return r.waitForTxDone(ctx)
+}
+
+// prepareTxMode configures the radio for transmission.
+func (r *SX127xSPI) prepareTxMode() error {
 	if err := r.writeRegister(RegOpMode, ModeStandby|ModeLoRa); err != nil {
 		return fmt.Errorf("failed to set standby mode: %w", err)
 	}
 
-	// Set FIFO pointer to TX base
 	if err := r.writeRegister(RegFifoAddrPtr, 0x00); err != nil {
 		return fmt.Errorf("failed to set FIFO pointer: %w", err)
 	}
 
-	// Write payload to FIFO
+	return nil
+}
+
+// writePayloadToFIFO writes payload bytes to the TX FIFO.
+func (r *SX127xSPI) writePayloadToFIFO(payload []byte) error {
 	for i, b := range payload {
 		if err := r.writeRegister(RegFifo, b); err != nil {
 			return fmt.Errorf("failed to write byte %d to FIFO: %w", i, err)
 		}
 	}
 
-	// Set payload length
 	if err := r.writeRegister(RegPayloadLength, byte(len(payload))); err != nil {
 		return fmt.Errorf("failed to set payload length: %w", err)
 	}
 
-	// Clear IRQ flags
+	return nil
+}
+
+// startTransmission begins the TX operation.
+func (r *SX127xSPI) startTransmission() error {
 	if err := r.writeRegister(RegIrqFlags, 0xFF); err != nil {
 		return fmt.Errorf("failed to clear IRQ flags: %w", err)
 	}
 
-	// Enter TX mode
 	if err := r.writeRegister(RegOpMode, ModeTx|ModeLoRa); err != nil {
 		return fmt.Errorf("failed to enter TX mode: %w", err)
 	}
 
-	// Wait for TxDone (with context timeout)
+	return nil
+}
+
+// waitForTxDone polls for transmission completion.
+func (r *SX127xSPI) waitForTxDone(ctx context.Context) error {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -312,7 +337,6 @@ func (r *SX127xSPI) Send(ctx context.Context, payload []byte) error {
 			}
 
 			if flags&IrqTxDone != 0 {
-				// Clear flags and return to standby
 				r.writeRegister(RegIrqFlags, 0xFF)
 				r.writeRegister(RegOpMode, ModeStandby|ModeLoRa)
 				return nil
@@ -323,12 +347,23 @@ func (r *SX127xSPI) Send(ctx context.Context, payload []byte) error {
 
 // Recv receives a payload.
 func (r *SX127xSPI) Recv(ctx context.Context) ([]byte, error) {
-	// Enter RX continuous mode
-	if err := r.writeRegister(RegOpMode, ModeRxContinuous|ModeLoRa); err != nil {
-		return nil, fmt.Errorf("failed to enter RX mode: %w", err)
+	if err := r.enterRxMode(); err != nil {
+		return nil, err
 	}
 
-	// Wait for RxDone
+	return r.waitForRxDone(ctx)
+}
+
+// enterRxMode configures the radio for continuous receive.
+func (r *SX127xSPI) enterRxMode() error {
+	if err := r.writeRegister(RegOpMode, ModeRxContinuous|ModeLoRa); err != nil {
+		return fmt.Errorf("failed to enter RX mode: %w", err)
+	}
+	return nil
+}
+
+// waitForRxDone polls for receive completion and extracts payload.
+func (r *SX127xSPI) waitForRxDone(ctx context.Context) ([]byte, error) {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -344,46 +379,55 @@ func (r *SX127xSPI) Recv(ctx context.Context) ([]byte, error) {
 			}
 
 			if flags&IrqRxDone != 0 {
-				// Check CRC
-				if flags&IrqPayloadCrc != 0 {
-					r.writeRegister(RegIrqFlags, 0xFF)
-					return nil, fmt.Errorf("CRC error on received payload")
-				}
-
-				// Read payload length
-				length, err := r.readRegister(RegRxNbBytes)
-				if err != nil {
-					return nil, fmt.Errorf("failed to read payload length: %w", err)
-				}
-
-				// Get current RX address
-				addr, err := r.readRegister(RegFifoRxCurrentAddr)
-				if err != nil {
-					return nil, fmt.Errorf("failed to read RX FIFO address: %w", err)
-				}
-
-				// Set FIFO pointer
-				if err := r.writeRegister(RegFifoAddrPtr, addr); err != nil {
-					return nil, fmt.Errorf("failed to set FIFO pointer to RX address: %w", err)
-				}
-
-				// Read payload
-				payload := make([]byte, length)
-				for i := range payload {
-					payload[i], err = r.readRegister(RegFifo)
-					if err != nil {
-						return nil, fmt.Errorf("failed to read byte %d from FIFO: %w", i, err)
-					}
-				}
-
-				// Clear flags and return to standby
-				r.writeRegister(RegIrqFlags, 0xFF)
-				r.writeRegister(RegOpMode, ModeStandby|ModeLoRa)
-
-				return payload, nil
+				return r.extractReceivedPayload(flags)
 			}
 		}
 	}
+}
+
+// extractReceivedPayload reads payload from FIFO after RxDone.
+func (r *SX127xSPI) extractReceivedPayload(flags byte) ([]byte, error) {
+	if flags&IrqPayloadCrc != 0 {
+		r.writeRegister(RegIrqFlags, 0xFF)
+		return nil, fmt.Errorf("CRC error on received payload")
+	}
+
+	length, err := r.readRegister(RegRxNbBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read payload length: %w", err)
+	}
+
+	addr, err := r.readRegister(RegFifoRxCurrentAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read RX FIFO address: %w", err)
+	}
+
+	if err := r.writeRegister(RegFifoAddrPtr, addr); err != nil {
+		return nil, fmt.Errorf("failed to set FIFO pointer to RX address: %w", err)
+	}
+
+	payload, err := r.readPayloadFromFIFO(length)
+	if err != nil {
+		return nil, err
+	}
+
+	r.writeRegister(RegIrqFlags, 0xFF)
+	r.writeRegister(RegOpMode, ModeStandby|ModeLoRa)
+
+	return payload, nil
+}
+
+// readPayloadFromFIFO reads specified number of bytes from FIFO.
+func (r *SX127xSPI) readPayloadFromFIFO(length byte) ([]byte, error) {
+	payload := make([]byte, length)
+	for i := range payload {
+		b, err := r.readRegister(RegFifo)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read byte %d from FIFO: %w", i, err)
+		}
+		payload[i] = b
+	}
+	return payload, nil
 }
 
 // RSSI returns the last packet RSSI in dBm.

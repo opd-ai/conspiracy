@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 )
@@ -68,67 +69,83 @@ func NewNonceGenerator(meshKey []byte, nodeID uint32, rc *RebootCounter) (*Nonce
 // automatically incremented and frame sequence reset to 0. This allows continuous
 // operation without requiring daemon restart.
 func (ng *NonceGenerator) Generate() ([]byte, error) {
-	// Increment frame sequence atomically
 	seq := atomic.AddUint32(&ng.frameSeq, 1)
 
-	// Check for wrap - attempt automatic recovery
+	var err error
 	if seq > 0xFFFF {
-		ng.mu.Lock()
-		defer ng.mu.Unlock()
-
-		// Double-check after acquiring lock (another goroutine may have already recovered)
-		currentSeq := atomic.LoadUint32(&ng.frameSeq)
-		if currentSeq > 0xFFFF {
-			// Attempt to increment reboot counter
-			if err := ng.rebootCounter.Increment(); err != nil {
-				return nil, fmt.Errorf("CRITICAL: Frame sequence wrapped but reboot counter increment failed; LoRa subsystem disabled to prevent nonce reuse: %w", err)
-			}
-
-			// Reset frame sequence to 1 (we're using this value for the current nonce)
-			atomic.StoreUint32(&ng.frameSeq, 1)
-			seq = 1
-
-			// Log successful recovery
-			fmt.Printf("INFO: Frame sequence wrapped after 65,536 frames; reboot counter incremented to %d to prevent nonce reuse\n", ng.rebootCounter.Value())
-		} else {
-			// Another goroutine already recovered, use the reset value
-			seq = currentSeq
+		seq, err = ng.handleFrameSeqWrap()
+		if err != nil {
+			return nil, err
 		}
 	}
 
-	// Generate 8 bytes of random entropy
+	randomBytes, err := ng.generateRandomEntropy()
+	if err != nil {
+		return nil, err
+	}
+
+	nonce := ng.computeNonce(seq, randomBytes)
+
+	if err := ng.performPeriodicEntropyCheck(); err != nil {
+		return nil, err
+	}
+
+	return nonce, nil
+}
+
+// handleFrameSeqWrap manages frame sequence wraparound with reboot counter increment.
+func (ng *NonceGenerator) handleFrameSeqWrap() (uint32, error) {
+	ng.mu.Lock()
+	defer ng.mu.Unlock()
+
+	currentSeq := atomic.LoadUint32(&ng.frameSeq)
+	if currentSeq > 0xFFFF {
+		if err := ng.rebootCounter.Increment(); err != nil {
+			return 0, fmt.Errorf("CRITICAL: Frame sequence wrapped but reboot counter increment failed; LoRa subsystem disabled to prevent nonce reuse: %w", err)
+		}
+
+		atomic.StoreUint32(&ng.frameSeq, 1)
+		slog.Info("Frame sequence wrapped after 65,536 frames; reboot counter incremented to prevent nonce reuse", "reboot_counter", ng.rebootCounter.Value())
+		return 1, nil
+	}
+
+	return currentSeq, nil
+}
+
+// generateRandomEntropy creates 8 bytes of random data.
+func (ng *NonceGenerator) generateRandomEntropy() ([]byte, error) {
 	randomBytes := make([]byte, 8)
 	if _, err := rand.Read(randomBytes); err != nil {
 		return nil, fmt.Errorf("crypto/rand failed: %w", err)
 	}
+	return randomBytes, nil
+}
 
-	// Construct input for HMAC:
-	// NodeID(4) || RebootCounter(4) || FrameSeq(2) || Random(8)
+// computeNonce creates the final nonce via HMAC-SHA256.
+func (ng *NonceGenerator) computeNonce(seq uint32, randomBytes []byte) []byte {
 	input := make([]byte, 18)
 	binary.BigEndian.PutUint32(input[0:4], ng.nodeID)
 	binary.BigEndian.PutUint32(input[4:8], ng.rebootCounter.Value())
 	binary.BigEndian.PutUint16(input[8:10], uint16(seq))
 	copy(input[10:18], randomBytes)
 
-	// Compute HMAC-SHA256
 	mac := hmac.New(sha256.New, ng.meshKey)
 	mac.Write(input)
-	fullMAC := mac.Sum(nil) // 32 bytes
+	fullMAC := mac.Sum(nil)
 
-	// Truncate to 12 bytes for ChaCha20-Poly1305 nonce
-	nonce := fullMAC[:12]
+	return fullMAC[:12]
+}
 
-	// Increment validation counter for monitoring
+// performPeriodicEntropyCheck runs continuous monitoring every 1,000 nonces.
+func (ng *NonceGenerator) performPeriodicEntropyCheck() error {
 	atomic.AddUint64(&ng.validationCtr, 1)
 
-	// Trigger continuous entropy monitor every 1,000 nonces
 	if atomic.LoadUint64(&ng.validationCtr)%1000 == 0 {
 		if err := ContinuousEntropyMonitor(); err != nil {
-			return nil, fmt.Errorf("continuous entropy monitor failed: %w", err)
+			return fmt.Errorf("continuous entropy monitor failed: %w", err)
 		}
 	}
-
-	return nonce, nil
+	return nil
 }
 
 // FrameSeq returns the current frame sequence number.
