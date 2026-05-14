@@ -218,7 +218,7 @@ The design specifies permissive-license dependencies but lacks verification:
   - **Files**: `internal/lora/zoning.go`
   - **Effort**: 5 days
 
-- [ ] **Implement OGM storm mitigation** during partition rejoin
+- [x] **Implement OGM storm mitigation** during partition rejoin
   - **Validation**: Integration test simulates network split/rejoin (50 nodes each side); verifies OGM rate limiter (10 OGM/sec, burst=50), staggered re-injection (0-5s jitter)
   - **Files**: `internal/batman/storm_mitigation.go`
   - **Effort**: 3 days
