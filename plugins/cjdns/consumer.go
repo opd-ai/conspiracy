@@ -26,11 +26,11 @@ type AdminAPIConfig struct {
 
 // Consumer implements HintConsumer for cjdns integration.
 type Consumer struct {
-	config      AdminAPIConfig
-	apiClient   *shared.AdminAPIClient
-	httpClient  *http.Client
-	peerCache   map[uint32]string // NodeID -> cjdns address
-	mu          sync.RWMutex
+	config     AdminAPIConfig
+	apiClient  *shared.AdminAPIClient
+	httpClient *http.Client
+	peerCache  map[uint32]string // NodeID -> cjdns address
+	mu         sync.RWMutex
 }
 
 // NewConsumer creates a new cjdns HintConsumer.
@@ -180,7 +180,6 @@ func (c *Consumer) Stats() map[string]interface{} {
 
 // PingAdminAPI checks if the cjdns admin API is reachable.
 func (c *Consumer) PingAdminAPI(ctx context.Context) error {
-	// Try a simple ping request
 	payload := map[string]interface{}{
 		"q": "ping",
 	}
@@ -189,22 +188,6 @@ func (c *Consumer) PingAdminAPI(ctx context.Context) error {
 		payload["password"] = c.config.Password
 	}
 
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal ping request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("http://%s", c.config.Address), bytes.NewReader(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("admin API unreachable: %w", err)
-	}
-	defer resp.Body.Close()
-
-	return nil
+	url := fmt.Sprintf("http://%s", c.config.Address)
+	return c.apiClient.SendRequestWithContext(ctx, url, payload)
 }

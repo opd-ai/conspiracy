@@ -1,0 +1,42 @@
+# Binaries
+conspiracyd
+/bin/
+*.exe
+*.so
+*.dylib
+
+# Analysis and metrics artifacts
+*.json
+!go.json
+pre-cleanup.json
+post-cleanup.json
+baseline.json
+*.loop-analysis.json
+*-baseline.json
+*-post.json
+diff-report*.json
+
+# Development logs
+*.log
+loop.log
+
+# Test outputs
+test-output.txt
+*-diff.txt
+refactoring_diff.txt
+
+# Temporary files
+/tmp/
+*.tmp
+*.temp
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
