@@ -209,34 +209,7 @@ func (sm *StormMitigator) RecordChurnEvent() {
 func (sm *StormMitigator) GetChurnRate() float64 {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-
-	if len(sm.churnEvents) < 2 {
-		return 0
-	}
-
-	now := time.Now()
-	cutoff := now.Add(-time.Second * time.Duration(churnWindowSize))
-
-	// Count events within window
-	count := 0
-	for i := len(sm.churnEvents) - 1; i >= 0; i-- {
-		if sm.churnEvents[i].After(cutoff) {
-			count++
-		}
-	}
-
-	if count < 2 {
-		return 0
-	}
-
-	// Calculate rate over actual time span
-	oldest := sm.churnEvents[len(sm.churnEvents)-count]
-	duration := now.Sub(oldest).Seconds()
-	if duration <= 0 {
-		return 0
-	}
-
-	return float64(count) / duration
+	return sm.GetChurnRateUnsafe()
 }
 
 // GetStaggeredJitter returns random jitter for staggered OGM re-injection

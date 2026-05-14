@@ -2,11 +2,8 @@
 package cjdns
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -14,6 +11,7 @@ import (
 	"time"
 
 	"github.com/opd-ai/conspiracy/internal/hint"
+	"github.com/opd-ai/conspiracy/plugins/internal/shared"
 )
 
 // AdminAPIConfig holds cjdns admin API connection settings.
@@ -28,10 +26,11 @@ type AdminAPIConfig struct {
 
 // Consumer implements HintConsumer for cjdns integration.
 type Consumer struct {
-	config     AdminAPIConfig
-	httpClient *http.Client
-	peerCache  map[uint32]string // NodeID -> cjdns address
-	mu         sync.RWMutex
+	config      AdminAPIConfig
+	apiClient   *shared.AdminAPIClient
+	httpClient  *http.Client
+	peerCache   map[uint32]string // NodeID -> cjdns address
+	mu          sync.RWMutex
 }
 
 // NewConsumer creates a new cjdns HintConsumer.
@@ -40,12 +39,12 @@ func NewConsumer(cfg AdminAPIConfig) *Consumer {
 		cfg.Timeout = 5 * time.Second
 	}
 
+	httpClient := &http.Client{Timeout: cfg.Timeout}
 	return &Consumer{
-		config: cfg,
-		httpClient: &http.Client{
-			Timeout: cfg.Timeout,
-		},
-		peerCache: make(map[uint32]string),
+		config:     cfg,
+		apiClient:  shared.NewAdminAPIClient(httpClient),
+		httpClient: httpClient,
+		peerCache:  make(map[uint32]string),
 	}
 }
 
@@ -149,56 +148,18 @@ func (c *Consumer) removePeer(peerAddr string) error {
 }
 
 // callAdminAPI makes a request to the cjdns admin API.
-// cjdns uses a custom bencode-based protocol, but for simplicity
-// this implementation uses HTTP/JSON assuming a JSON-RPC wrapper.
 func (c *Consumer) callAdminAPI(method string, args map[string]interface{}) error {
-	// Build request payload
 	payload := map[string]interface{}{
 		"q":    method,
 		"args": args,
 	}
 
-	// Add password if configured
 	if c.config.Password != "" {
 		payload["password"] = c.config.Password
 	}
 
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	// Send HTTP POST request
 	url := fmt.Sprintf("http://%s", c.config.Address)
-	resp, err := c.httpClient.Post(url, "application/json", bytes.NewReader(jsonData))
-	if err != nil {
-		return fmt.Errorf("admin API request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Read response
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	// Check status code
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("admin API error (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	// Parse response
-	var result map[string]interface{}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
-	}
-
-	// Check for errors in response
-	if errMsg, ok := result["error"].(string); ok && errMsg != "" {
-		return fmt.Errorf("admin API returned error: %s", errMsg)
-	}
-
-	return nil
+	return c.apiClient.SendRequest(url, payload)
 }
 
 // Close cleans up the consumer.
