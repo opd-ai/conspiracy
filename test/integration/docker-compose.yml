@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  # Integration test runner
+  integration-test:
+    build:
+      context: ../..
+      dockerfile: test/integration/Dockerfile
+    networks:
+      - mesh-test
+    environment:
+      - CONSPIRACYD_STORAGE_DIR=/tmp/conspiracy-test
+      - GOMAXPROCS=4
+    command: go test -v -tags=integration -timeout=10m ./test/integration
+    depends_on:
+      - node-a
+      - node-b
+      - node-c
+
+  # Node A: Bootstrap node
+  node-a:
+    build:
+      context: ../..
+      dockerfile: test/integration/Dockerfile.node
+    container_name: conspiracy-node-a
+    hostname: node-a
+    networks:
+      mesh-test:
+        ipv4_address: 172.20.0.10
+    environment:
+      - NODE_ID=1
+      - LORA_UDP_LISTEN=0.0.0.0:10001
+      - LORA_UDP_PEER=172.20.0.11:10002
+      - CONSPIRACYD_STORAGE_DIR=/var/lib/conspiracyd
+    volumes:
+      - node-a-data:/var/lib/conspiracyd
+
+  # Node B: Intermediate node
+  node-b:
+    build:
+      context: ../..
+      dockerfile: test/integration/Dockerfile.node
+    container_name: conspiracy-node-b
+    hostname: node-b
+    networks:
+      mesh-test:
+        ipv4_address: 172.20.0.11
+    environment:
+      - NODE_ID=2
+      - LORA_UDP_LISTEN=0.0.0.0:10002
+      - LORA_UDP_PEER=172.20.0.12:10003
+      - CONSPIRACYD_STORAGE_DIR=/var/lib/conspiracyd
+    volumes:
+      - node-b-data:/var/lib/conspiracyd
+    depends_on:
+      - node-a
+
+  # Node C: Leaf node
+  node-c:
+    build:
+      context: ../..
+      dockerfile: test/integration/Dockerfile.node
+    container_name: conspiracy-node-c
+    hostname: node-c
+    networks:
+      mesh-test:
+        ipv4_address: 172.20.0.12
+    environment:
+      - NODE_ID=3
+      - LORA_UDP_LISTEN=0.0.0.0:10003
+      - LORA_UDP_PEER=172.20.0.10:10001
+      - CONSPIRACYD_STORAGE_DIR=/var/lib/conspiracyd
+    volumes:
+      - node-c-data:/var/lib/conspiracyd
+    depends_on:
+      - node-b
+
+networks:
+  mesh-test:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+volumes:
+  node-a-data:
+  node-b-data:
+  node-c-data:

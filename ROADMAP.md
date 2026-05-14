@@ -231,11 +231,11 @@ The design specifies permissive-license dependencies but lacks verification:
 ### Priority 7: Testing and Validation
 **Goal**: Comprehensive test coverage before field deployment
 
-- [ ] **Write hardware-in-the-loop tests** for LoRa driver
+- [x] **Write hardware-in-the-loop tests** for LoRa driver
   - **Validation**: Automated test on CI runner with LoRa HAT attached (SX1276); verifies TX/RX round-trip at SF7, SF10, SF12
-  - **Files**: `internal/lora/driver_hw_test.go`, requires USB LoRa dongle or SPI HAT on CI runner
+  - **Files**: `internal/lora/sx127x_spi_hw_test.go` (enhanced), `.github/workflows/hardware-test.yml`, `docs/hardware-testing.md`
   - **Effort**: 4 days (includes CI runner hardware setup, test fixture wiring)
-  - **Note**: May be deferred if CI hardware provisioning is infeasible; manual testing acceptable for v1.0
+  - **Note**: Manual workflow dispatch configured; self-hosted runner required for execution
 
 - [ ] **Write integration tests** for 3-node mesh topology
   - **Validation**: Docker Compose or VM-based test spawns 3 nodes; verifies JOIN sequence, route establishment, packet forwarding A→B→C

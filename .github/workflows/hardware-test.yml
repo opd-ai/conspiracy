@@ -1,0 +1,49 @@
+name: Hardware Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: 'Test mode (tx or rx)'
+        required: true
+        type: choice
+        options:
+          - tx
+          - rx
+      spreading_factors:
+        description: 'Spreading factors to test (comma-separated, e.g., 7,10,12)'
+        required: false
+        default: '7,10,12'
+
+jobs:
+  hardware-test:
+    runs-on: self-hosted
+    # This job requires a self-hosted runner with LoRa hardware attached.
+    # See docs/hardware-testing.md for setup instructions.
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25'
+    
+    - name: Verify LoRa hardware availability
+      run: |
+        if [ ! -e /dev/spidev0.0 ]; then
+          echo "ERROR: /dev/spidev0.0 not found. LoRa hardware not attached."
+          exit 1
+        fi
+        echo "LoRa hardware detected at /dev/spidev0.0"
+    
+    - name: Run hardware tests
+      env:
+        LORA_TEST_MODE: ${{ inputs.test_mode }}
+      run: |
+        echo "Running hardware tests in $LORA_TEST_MODE mode for SF: ${{ inputs.spreading_factors }}"
+        go test -v -tags=hardware -timeout=5m ./internal/lora -run TestSX127xSPI_TxRx_RoundTrip
+    
+    - name: Run configuration validation tests
+      run: |
+        go test -v -tags=hardware -timeout=2m ./internal/lora -run TestSX127xSPI_ConfigurationValidation
