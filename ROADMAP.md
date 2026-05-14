@@ -136,7 +136,7 @@ Zero automation for builds, tests, linting, or cross-compilation verification:
 ### Priority 1: Enable End-to-End Mesh Formation (MVP Blockers)
 **Goal**: Node A discovers Node B via LoRa BEACON, sends JOIN_REQ, receives JOIN_ACK with SSID, joins 802.11s mesh, batman-adv routing established. Estimated effort: **15 person-days**.
 
-- [ ] **Wire auto-join FSM to LoRa RX loop** (5 days)
+- [x] **Wire auto-join FSM to LoRa RX loop** (5 days)
   - **Current state**: `cmd/conspiracyd/main.go:180` TODO "Process received frames through auto-join state machine"
   - **Action**: Modify `loraRxLoop()` to:
     1. Call `lora.UnmarshalFrame(pkt)` to parse received frames
@@ -146,7 +146,7 @@ Zero automation for builds, tests, linting, or cross-compilation verification:
   - **Validation**: Integration test with 2 UDP radios: Node B receives Node A BEACON, FSM transitions INIT→SCANNING→JOINING, sends JOIN_REQ with valid PoW, Node A responds JOIN_ACK, Node B logs "Joined mesh SSID=test-mesh"
   - **Files**: Modify `cmd/conspiracyd/main.go:175-181`, create `cmd/conspiracyd/frame_handler.go` with `handleBEACON()`, `handleJOIN_REQ()`, `handleJOIN_ACK()` functions
 
-- [ ] **Enable AEAD encryption for BEACON frames** (3 days)
+- [x] **Enable AEAD encryption for BEACON frames** (3 days)
   - **Current state**: `internal/crypto/aead.go` implemented but unused; `internal/lora/beacon.go` transmits plaintext
   - **Action**: Modify `internal/lora/beacon.go` Transmitter:
     1. Generate nonce via `ng.Generate()` (NonceGenerator already initialized in main.go:115)
@@ -156,7 +156,7 @@ Zero automation for builds, tests, linting, or cross-compilation verification:
   - **Validation**: Unit test verifies nonce included in wire format; integration test: Node A transmits encrypted BEACON, passive observer cannot decrypt without MESH_KEY, Node B decrypts with shared key and extracts correct NodeID/SSID
   - **Files**: Modify `internal/lora/beacon.go:45-60`, `internal/lora/frame.go:28-40` (header struct), `internal/lora/frame.go:85-110` (unmarshal)
 
-- [ ] **Implement Wi-Fi mesh join via iw command** (interim solution, 2 days)
+- [x] **Implement Wi-Fi mesh join via iw command** (interim solution, 2 days)
   - **Current state**: `internal/wifi/mesh.go:47-66` stub logs "requires iw command"
   - **Action**: Replace stub with `os/exec` calls:
     1. `exec.Command("iw", "dev", ifname, "set", "type", "mp")` to switch to mesh mode
@@ -176,7 +176,7 @@ Zero automation for builds, tests, linting, or cross-compilation verification:
   - **Validation**: Integration test with 3-node mesh: Node A joins, batman controller detects Node A originator, Prometheus `batman_originator_count` increments to 1, HintBus receives RouteAdded hint with NodeID extracted from MAC address
   - **Files**: Modify `internal/batman/controller.go:120-160` (add `StartOGMMonitor()` method), `internal/batman/scale_limit.go:45-70` (originator map update logic), create `internal/batman/ogm_parser.go` for netlink event parsing
 
-- [ ] **Trigger 802.11s association from auto-join FSM** (1 day)
+- [x] **Trigger 802.11s association from auto-join FSM** (1 day)
   - **Current state**: `internal/autojoin/join.go:333` has TODO "Trigger 802.11s association"
   - **Action**: In FSM `OnJOIN_ACK()` handler:
     1. Extract SSID, channel from JOIN_ACK payload

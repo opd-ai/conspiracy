@@ -11,6 +11,7 @@ import (
 
 	"github.com/opd-ai/conspiracy/internal/crypto"
 	"github.com/opd-ai/conspiracy/internal/lora"
+	"github.com/opd-ai/conspiracy/internal/wifi"
 )
 
 // State represents the current state of the auto-join FSM
@@ -55,25 +56,27 @@ type PeerInfo struct {
 
 // FSM represents the auto-join finite state machine
 type FSM struct {
-	state        State
-	radio        lora.PacketRadio
-	ng           *crypto.NonceGenerator
-	meshKey      []byte
-	nodeID       uint32
-	scannedPeers []PeerInfo
-	joinAttempts int
-	maxAttempts  int
-	scanDuration time.Duration
+	state         State
+	radio         lora.PacketRadio
+	ng            *crypto.NonceGenerator
+	meshKey       []byte
+	nodeID        uint32
+	scannedPeers  []PeerInfo
+	joinAttempts  int
+	maxAttempts   int
+	scanDuration  time.Duration
+	meshInterface string // Interface name for 802.11s mesh (e.g., "wlan0")
 }
 
 // Config holds configuration for the auto-join FSM
 type Config struct {
-	Radio        lora.PacketRadio
-	NonceGen     *crypto.NonceGenerator
-	MeshKey      []byte
-	NodeID       uint32
-	ScanDuration time.Duration // Duration to scan for BEACONs (default: 30s)
-	MaxAttempts  int           // Max JOIN_REQ attempts (default: 3)
+	Radio         lora.PacketRadio
+	NonceGen      *crypto.NonceGenerator
+	MeshKey       []byte
+	NodeID        uint32
+	ScanDuration  time.Duration // Duration to scan for BEACONs (default: 30s)
+	MaxAttempts   int           // Max JOIN_REQ attempts (default: 3)
+	MeshInterface string        // Wi-Fi interface name for mesh joining
 }
 
 // NewFSM creates a new auto-join finite state machine
@@ -89,13 +92,14 @@ func NewFSM(cfg Config) *FSM {
 	}
 
 	return &FSM{
-		state:        StateINIT,
-		radio:        cfg.Radio,
-		ng:           cfg.NonceGen,
-		meshKey:      cfg.MeshKey,
-		nodeID:       cfg.NodeID,
-		scanDuration: scanDuration,
-		maxAttempts:  maxAttempts,
+		state:         StateINIT,
+		radio:         cfg.Radio,
+		ng:            cfg.NonceGen,
+		meshKey:       cfg.MeshKey,
+		nodeID:        cfg.NodeID,
+		scanDuration:  scanDuration,
+		maxAttempts:   maxAttempts,
+		meshInterface: cfg.MeshInterface,
 	}
 }
 
@@ -328,10 +332,25 @@ func (fsm *FSM) processJoinAckResponse(ack *lora.JOIN_ACKPayload) error {
 		return nil
 	}
 
+	if fsm.meshInterface != "" {
+		if err := fsm.triggerMeshJoin(ssid, int(ack.Channel)); err != nil {
+			slog.Error("802.11s mesh join failed", "error", err, "ssid", ssid, "channel", ack.Channel)
+			return fmt.Errorf("mesh join failed: %w", err)
+		}
+		slog.Info("Joined mesh", "ssid", ssid, "channel", ack.Channel, "interface", fsm.meshInterface)
+	} else {
+		slog.Warn("Mesh interface not configured; skipping 802.11s association")
+	}
+
 	slog.Info("FSM: JOINING → CONNECTED")
 	fsm.state = StateCONNECTED
-	// TODO: Trigger 802.11s association (internal/wifi integration)
 	return nil
+}
+
+// triggerMeshJoin initiates 802.11s mesh association via Wi-Fi controller.
+func (fsm *FSM) triggerMeshJoin(ssid string, channel int) error {
+	mc := wifi.NewMeshController(fsm.meshInterface)
+	return mc.JoinMesh(ssid, channel)
 }
 
 // handleConnected monitors peer liveness

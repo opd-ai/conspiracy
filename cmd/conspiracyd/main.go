@@ -41,14 +41,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	radio, ng, err := initializeLoRaSubsystem(cfg, meshKey, rc)
+	radio, ng, nodeID, err := initializeLoRaSubsystem(cfg, meshKey, rc)
 	if err != nil {
 		slog.Error("LoRa initialization failed", "error", err)
 		os.Exit(1)
 	}
 	defer radio.Close()
 
-	runDaemon(radio, ng)
+	runDaemon(cfg, radio, ng, meshKey, nodeID)
 }
 
 // loadAndValidateConfig loads configuration from file.
@@ -93,7 +93,7 @@ func initializeCryptoComponents(cfg *config.Config) (*crypto.RebootCounter, []by
 }
 
 // initializeLoRaSubsystem creates radio and nonce generator.
-func initializeLoRaSubsystem(cfg *config.Config, meshKey []byte, rc *crypto.RebootCounter) (lora.PacketRadio, *crypto.NonceGenerator, error) {
+func initializeLoRaSubsystem(cfg *config.Config, meshKey []byte, rc *crypto.RebootCounter) (lora.PacketRadio, *crypto.NonceGenerator, uint32, error) {
 	loraConfig := lora.Config{
 		Device:    cfg.LoRa.Device,
 		Frequency: cfg.LoRa.FrequencyMHz,
@@ -107,7 +107,7 @@ func initializeLoRaSubsystem(cfg *config.Config, meshKey []byte, rc *crypto.Rebo
 
 	radio, err := lora.NewRadio(loraConfig)
 	if err != nil {
-		return nil, nil, fmt.Errorf("radio initialization failed: %w", err)
+		return nil, nil, 0, fmt.Errorf("radio initialization failed: %w", err)
 	}
 	slog.Info("LoRa radio initialized", "device", cfg.LoRa.Device, "frequency", cfg.LoRa.FrequencyMHz)
 
@@ -115,19 +115,20 @@ func initializeLoRaSubsystem(cfg *config.Config, meshKey []byte, rc *crypto.Rebo
 	ng, err := crypto.NewNonceGenerator(meshKey, nodeID, rc)
 	if err != nil {
 		radio.Close()
-		return nil, nil, fmt.Errorf("nonce generator initialization failed: %w", err)
+		return nil, nil, 0, fmt.Errorf("nonce generator initialization failed: %w", err)
 	}
 	slog.Info("Nonce generator initialized", "node_id", nodeID, "reboot_counter", rc.Value())
 
-	return radio, ng, nil
+	return radio, ng, nodeID, nil
 }
 
 // runDaemon starts background goroutines and waits for shutdown.
-func runDaemon(radio lora.PacketRadio, ng *crypto.NonceGenerator) {
+func runDaemon(cfg *config.Config, radio lora.PacketRadio, ng *crypto.NonceGenerator, meshKey []byte, nodeID uint32) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go loraRxLoop(ctx, radio, ng)
+	handler := newFrameHandler(radio, ng, meshKey, nodeID, cfg)
+	go loraRxLoop(ctx, radio, handler)
 
 	go func() {
 		slog.Info("Starting metrics server", "addr", ":9090")
@@ -147,9 +148,8 @@ func runDaemon(radio lora.PacketRadio, ng *crypto.NonceGenerator) {
 	slog.Info("Shutdown complete")
 }
 
-// loraRxLoop is a placeholder for the LoRa receive loop.
-// In Phase 2, this will implement the auto-join FSM (BEACON scanning, JOIN_REQ/ACK).
-func loraRxLoop(ctx context.Context, radio lora.PacketRadio, ng *crypto.NonceGenerator) {
+// loraRxLoop processes received LoRa frames through the frame handler.
+func loraRxLoop(ctx context.Context, radio lora.PacketRadio, handler *frameHandler) {
 	slog.Info("LoRa RX loop started")
 	defer slog.Info("LoRa RX loop stopped")
 
@@ -157,7 +157,7 @@ func loraRxLoop(ctx context.Context, radio lora.PacketRadio, ng *crypto.NonceGen
 		if shouldStopRxLoop(ctx) {
 			return
 		}
-		receiveAndLogFrame(ctx, radio)
+		receiveAndProcessFrame(ctx, radio, handler)
 	}
 }
 
@@ -171,11 +171,15 @@ func shouldStopRxLoop(ctx context.Context) bool {
 	}
 }
 
-// receiveAndLogFrame receives a frame and logs receive errors at debug level.
-func receiveAndLogFrame(ctx context.Context, radio lora.PacketRadio) {
-	_, err := radio.Recv(ctx)
+// receiveAndProcessFrame receives a frame and processes it through the handler.
+func receiveAndProcessFrame(ctx context.Context, radio lora.PacketRadio, handler *frameHandler) {
+	data, err := radio.Recv(ctx)
 	if err != nil {
 		slog.Debug("LoRa receive error", "error", err)
+		return
 	}
-	// TODO: Process received frames through auto-join state machine
+
+	if err := handler.processFrame(ctx, data); err != nil {
+		slog.Debug("Frame processing error", "error", err)
+	}
 }
