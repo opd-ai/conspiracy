@@ -213,7 +213,7 @@ The design specifies permissive-license dependencies but lacks verification:
   - **Files**: `deployments/systemd/conspiracyd.service`, `scripts/install.sh`
   - **Effort**: 1 day
 
-- [ ] **Implement multi-frequency zoning** for 250+ node deployments
+- [x] **Implement multi-frequency zoning** for 250+ node deployments
   - **Validation**: Integration test with 300 simulated nodes (UDP stubs); verifies hash-based zone assignment, duty-cycle split across 3 frequencies, bridge node forwarding
   - **Files**: `internal/lora/zoning.go`
   - **Effort**: 5 days
