@@ -1,0 +1,8 @@
+?   	github.com/opd-ai/conspiracy/cmd/conspiracyd	[no test files]
+?   	github.com/opd-ai/conspiracy/internal/autojoin	[no test files]
+?   	github.com/opd-ai/conspiracy/internal/batman	[no test files]
+ok  	github.com/opd-ai/conspiracy/internal/config	1.023s
+ok  	github.com/opd-ai/conspiracy/internal/crypto	1.144s
+?   	github.com/opd-ai/conspiracy/internal/hint	[no test files]
+ok  	github.com/opd-ai/conspiracy/internal/lora	1.020s
+?   	github.com/opd-ai/conspiracy/internal/wifi	[no test files]
