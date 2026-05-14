@@ -99,20 +99,28 @@ func NewFSM(cfg Config) *FSM {
 	}
 }
 
-// Run executes the auto-join state machine
+// Run executes the auto-join state machine.
 func (fsm *FSM) Run(ctx context.Context) error {
 	slog.Info("Auto-join FSM starting", "state", fsm.state.String())
 
 	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("Auto-join FSM stopped", "reason", ctx.Err())
-			return ctx.Err()
-		default:
-			if err := fsm.step(ctx); err != nil {
-				return fmt.Errorf("FSM step failed: %w", err)
-			}
+		if err := executeStep(ctx, fsm); err != nil {
+			return err
 		}
+	}
+}
+
+// executeStep performs one FSM iteration with context cancellation check.
+func executeStep(ctx context.Context, fsm *FSM) error {
+	select {
+	case <-ctx.Done():
+		slog.Info("Auto-join FSM stopped", "reason", ctx.Err())
+		return ctx.Err()
+	default:
+		if err := fsm.step(ctx); err != nil {
+			return fmt.Errorf("FSM step failed: %w", err)
+		}
+		return nil
 	}
 }
 
@@ -404,15 +412,13 @@ func (fsm *FSM) sendJoinRequest(ctx context.Context, peer PeerInfo) error {
 	return nil
 }
 
-// awaitJoinAck waits for a JOIN_ACK response
+// awaitJoinAck waits for a JOIN_ACK response.
 func (fsm *FSM) awaitJoinAck(ctx context.Context, timeout time.Duration) (*lora.JOIN_ACKPayload, error) {
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
+		if err := checkContextDone(ctx); err != nil {
+			return nil, err
 		}
 
 		ack, err := fsm.receiveJoinAckFrame(ctx)
@@ -425,6 +431,16 @@ func (fsm *FSM) awaitJoinAck(ctx context.Context, timeout time.Duration) (*lora.
 	}
 
 	return nil, fmt.Errorf("JOIN_ACK timeout after %v", timeout)
+}
+
+// checkContextDone returns ctx.Err() if context is done, otherwise returns nil.
+func checkContextDone(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
 }
 
 // receiveJoinAckFrame attempts to receive and parse a JOIN_ACK frame.

@@ -134,7 +134,7 @@ The design specifies permissive-license dependencies but lacks verification:
   - **Files**: `internal/lora/frame.go`, header parsing, payload serialization
   - **Effort**: 5 days
 
-- [ ] **Implement BEACON transmission** with adaptive TX intervals
+- [x] **Implement BEACON transmission** with adaptive TX intervals
   - **Validation**: Integration test measures actual on-air time; verifies 1% duty-cycle compliance (EU 868 MHz) with 100 nodes
   - **Files**: `internal/lora/beacon.go`, duty-cycle token bucket scheduler
   - **Effort**: 4 days
@@ -144,7 +144,7 @@ The design specifies permissive-license dependencies but lacks verification:
   - **Files**: `internal/crypto/pow.go`
   - **Effort**: 3 days
 
-- [ ] **Implement JOIN_REQ/JOIN_ACK state machine**
+- [x] **Implement JOIN_REQ/JOIN_ACK state machine**
   - **Validation**: Integration test with 2 nodes (UDP stubs): new node sends JOIN_REQ, existing node responds with JOIN_ACK containing SSID/BSSID
   - **Files**: `internal/autojoin/join.go`
   - **Effort**: 5 days
@@ -167,7 +167,7 @@ The design specifies permissive-license dependencies but lacks verification:
   - **Files**: `internal/batman/fallback.go`
   - **Effort**: 3 days
 
-- [ ] **Implement originator count monitoring** with 5,000-node hard limit
+- [x] **Implement originator count monitoring** with 5,000-node hard limit
   - **Validation**: Unit test simulates 4,500 originators; verifies OGM emission stops; logs WARNING; hysteresis recovery at 4,200
   - **Files**: `internal/batman/scale_limit.go`, Prometheus gauge `batman_originator_count`
   - **Effort**: 3 days

@@ -69,3 +69,19 @@ func Decrypt(meshKey []byte, nonce [12]byte, ciphertext []byte) ([]byte, error) 
 
 	return plaintext, nil
 }
+
+// ComputeHMAC computes HMAC-SHA256 over frame data, truncated to 12 bytes.
+// Used for frame authentication (header + ciphertext).
+//
+// meshKey: 32-byte mesh encryption key
+// frameData: complete frame (header + payload)
+func ComputeHMAC(meshKey, frameData []byte) [12]byte {
+	mac := sha256.New()
+	mac.Write(meshKey)
+	mac.Write(frameData)
+	sum := mac.Sum(nil)
+
+	var truncated [12]byte
+	copy(truncated[:], sum[:12])
+	return truncated
+}

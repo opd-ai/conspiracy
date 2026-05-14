@@ -161,17 +161,28 @@ func (b *Bus) Run(ctx context.Context) error {
 // runConsumer processes hints for a single consumer.
 func (b *Bus) runConsumer(ctx context.Context, c *consumer) {
 	for {
-		select {
-		case <-ctx.Done():
+		hint, ok := selectHintOrCancel(ctx, c.ch)
+		if !ok {
 			return
-		case hint, ok := <-c.ch:
-			if !ok {
-				return
-			}
-			if err := c.impl.Consume(hint); err != nil {
-				slog.Error("hint consumer error", "consumer", c.name, "error", err)
-			}
 		}
+		b.processHint(c, hint)
+	}
+}
+
+// selectHintOrCancel returns next hint or signals cancellation.
+func selectHintOrCancel(ctx context.Context, ch chan Hint) (Hint, bool) {
+	select {
+	case <-ctx.Done():
+		return Hint{}, false
+	case hint, ok := <-ch:
+		return hint, ok
+	}
+}
+
+// processHint invokes consumer implementation with error logging.
+func (b *Bus) processHint(c *consumer, hint Hint) {
+	if err := c.impl.Consume(hint); err != nil {
+		slog.Error("hint consumer error", "consumer", c.name, "error", err)
 	}
 }
 

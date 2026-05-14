@@ -84,20 +84,38 @@ func applyRadioConfig(radio *UDPRadio, cfg Config) {
 
 // applyAndValidateSPIConfig sets and validates parameters for SPI radios.
 func applyAndValidateSPIConfig(radio *SX127xSPI, cfg Config) error {
-	if cfg.Frequency > 0 {
-		if err := radio.SetFrequency(cfg.Frequency); err != nil {
-			return err
-		}
+	if err := applyFrequencyConfig(radio, cfg.Frequency); err != nil {
+		return err
 	}
-	if cfg.SF > 0 {
-		if err := radio.SetSpreadingFactor(cfg.SF); err != nil {
-			return err
-		}
+	if err := applySpreadingFactorConfig(radio, cfg.SF); err != nil {
+		return err
 	}
-	if cfg.Bandwidth > 0 {
-		if err := radio.SetBandwidth(cfg.Bandwidth); err != nil {
-			return err
-		}
+	if err := applyBandwidthConfig(radio, cfg.Bandwidth); err != nil {
+		return err
+	}
+	return nil
+}
+
+// applyFrequencyConfig sets frequency if configured.
+func applyFrequencyConfig(radio *SX127xSPI, frequency float64) error {
+	if frequency > 0 {
+		return radio.SetFrequency(frequency)
+	}
+	return nil
+}
+
+// applySpreadingFactorConfig sets spreading factor if configured.
+func applySpreadingFactorConfig(radio *SX127xSPI, sf int) error {
+	if sf > 0 {
+		return radio.SetSpreadingFactor(sf)
+	}
+	return nil
+}
+
+// applyBandwidthConfig sets bandwidth if configured.
+func applyBandwidthConfig(radio *SX127xSPI, bandwidth int) error {
+	if bandwidth > 0 {
+		return radio.SetBandwidth(bandwidth)
 	}
 	return nil
 }

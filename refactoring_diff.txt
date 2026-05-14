@@ -1,0 +1,160 @@
+
+Complexity Diff Report
+======================
+Baseline: baseline (2026-05-14T16:10:10-04:00)
+Current:  current (2026-05-14T16:15:07-04:00)
+
+=== SUMMARY ===
+✅ Improvements: 20
+⚠️  Neutral Changes: 20
+Overall Trend: improving
+Quality Score: 50.0/100
+
+=== IMPROVEMENTS ===
+✅ complexity_decrease: lora.waitForTxDone
+   File: internal/lora/sx127x_spi.go:349
+   Change: 7 → 3 (57.1% improvement)
+   Benefit: Major improvement in code quality
+
+✅ complexity_decrease: lora.waitForTxDone
+   File: internal/lora/sx127x_spi.go:349
+   Change: 10.6 → 4.4 (58.5% improvement)
+   Benefit: Major improvement in code quality
+
+✅ complexity_decrease: lora.NewSX127xSPI
+   File: internal/lora/sx127x_spi.go:78
+   Change: 7 → 3 (57.1% improvement)
+   Benefit: Major improvement in code quality
+
+✅ complexity_decrease: lora.NewSX127xSPI
+   File: internal/lora/sx127x_spi.go:78
+   Change: 9.6 → 4.4 (54.2% improvement)
+   Benefit: Major improvement in code quality
+
+✅ complexity_decrease: main.loraRxLoop
+   File: cmd/conspiracyd/main.go:152
+   Change: 6 → 3 (50.0% improvement)
+   Benefit: Major improvement in code quality
+
+✅ complexity_decrease: main.loraRxLoop
+   File: cmd/conspiracyd/main.go:152
+   Change: 9.3 → 4.9 (47.3% improvement)
+   Benefit: Significant improvement in maintainability
+
+✅ complexity_decrease: hint.runConsumer
+   File: internal/hint/bus.go:162
+   Change: 7 → 3 (57.1% improvement)
+   Benefit: Major improvement in code quality
+
+✅ complexity_decrease: hint.runConsumer
+   File: internal/hint/bus.go:162
+   Change: 10.6 → 4.9 (53.8% improvement)
+   Benefit: Major improvement in code quality
+
+✅ complexity_decrease: autojoin.awaitJoinAck
+   File: internal/autojoin/join.go:416
+   Change: 7 → 5 (28.6% improvement)
+   Benefit: Significant improvement in maintainability
+
+✅ complexity_decrease: autojoin.awaitJoinAck
+   File: internal/autojoin/join.go:416
+   Change: 10.1 → 7.5 (25.7% improvement)
+   Benefit: Significant improvement in maintainability
+
+✅ complexity_decrease: lora.waitForRxDone
+   File: internal/lora/sx127x_spi.go:365
+   Change: 7 → 5 (28.6% improvement)
+   Benefit: Significant improvement in maintainability
+
+✅ complexity_decrease: lora.waitForRxDone
+   File: internal/lora/sx127x_spi.go:365
+   Change: 10.6 → 7.5 (29.2% improvement)
+   Benefit: Significant improvement in maintainability
+
+✅ complexity_decrease: autojoin.Run
+   File: internal/autojoin/join.go:103
+   Change: 6 → 3 (50.0% improvement)
+   Benefit: Major improvement in code quality
+
+✅ complexity_decrease: autojoin.Run
+   File: internal/autojoin/join.go:103
+   Change: 9.3 → 4.9 (47.3% improvement)
+   Benefit: Significant improvement in maintainability
+
+✅ complexity_decrease: lora.applyAndValidateSPIConfig
+   File: internal/lora/factory.go:86
+   Change: 7 → 4 (42.9% improvement)
+   Benefit: Significant improvement in maintainability
+
+✅ complexity_decrease: lora.applyAndValidateSPIConfig
+   File: internal/lora/factory.go:86
+   Change: 10.1 → 5.7 (43.6% improvement)
+   Benefit: Significant improvement in maintainability
+
+✅ complexity_decrease: crypto.Accept
+   File: internal/crypto/replay.go:38
+   Change: 9 → 4 (55.6% improvement)
+   Benefit: Major improvement in code quality
+
+✅ complexity_decrease: crypto.Accept
+   File: internal/crypto/replay.go:38
+   Change: 12.7 → 5.7 (55.1% improvement)
+   Benefit: Major improvement in code quality
+
+✅ complexity_decrease: crypto.EntropyAudit
+   File: internal/crypto/entropy.go:21
+   Change: 7 → 2 (71.4% improvement)
+   Benefit: Major improvement in code quality
+
+✅ complexity_decrease: crypto.EntropyAudit
+   File: internal/crypto/entropy.go:21
+   Change: 9.6 → 3.1 (67.7% improvement)
+   Benefit: Major improvement in code quality
+
+=== DETAILED CHANGES ===
+## function_overall_complexity
+- waitForTxDone: 10.6 → 4.4 (-58.5%)
+- NewSX127xSPI: 9.6 → 4.4 (-54.2%)
+- loraRxLoop: 9.3 → 4.9 (-47.3%)
+- runConsumer: 10.6 → 4.9 (-53.8%)
+- awaitJoinAck: 10.1 → 7.5 (-25.7%)
+- waitForRxDone: 10.6 → 7.5 (-29.2%)
+- Run: 9.3 → 4.9 (-47.3%)
+- applyAndValidateSPIConfig: 10.1 → 5.7 (-43.6%)
+- Accept: 12.7 → 5.7 (-55.1%)
+- EntropyAudit: 9.6 → 3.1 (-67.7%)
+
+## function
+- shouldStopRxLoop: <nil> → 5.7
+- normalizeSequenceNumbers: <nil> → 4.9
+- executeStep: <nil> → 7.5
+- acceptFutureSequence: <nil> → 3.1
+- openAndConfigureSPI: <nil> → 4.4
+- pollWithTicker: <nil> → 10.6
+- waitForKernelEntropyPool: <nil> → 5.7
+- createNewWindow: <nil> → 1.3
+- selectHintOrCancel: <nil> → 5.7
+- acceptPastSequence: <nil> → 4.4
+- applySpreadingFactorConfig: <nil> → 3.1
+- generateEntropySample: <nil> → 3.1
+- applyBandwidthConfig: <nil> → 3.1
+- applyFrequencyConfig: <nil> → 3.1
+- validateCSPRNGOutput: <nil> → 5.7
+- initializeAndVerifySX127x: <nil> → 5.7
+- receiveAndLogFrame: <nil> → 3.1
+- checkContextDone: <nil> → 5.7
+- verifySX127xChipVersion: <nil> → 4.4
+- processHint: <nil> → 3.1
+
+## function_complexity
+- waitForTxDone: 7 → 3 (-57.1%)
+- NewSX127xSPI: 7 → 3 (-57.1%)
+- loraRxLoop: 6 → 3 (-50.0%)
+- runConsumer: 7 → 3 (-57.1%)
+- awaitJoinAck: 7 → 5 (-28.6%)
+- waitForRxDone: 7 → 5 (-28.6%)
+- Run: 6 → 3 (-50.0%)
+- applyAndValidateSPIConfig: 7 → 4 (-42.9%)
+- Accept: 9 → 4 (-55.6%)
+- EntropyAudit: 7 → 2 (-71.4%)
+

@@ -76,53 +76,77 @@ type SX127xSPI struct {
 // resetPin: GPIO pin for RESET (e.g., "GPIO25")
 // dio0Pin: GPIO pin for DIO0 interrupt (e.g., "GPIO24")
 func NewSX127xSPI(spiPort, resetPin, dio0Pin string) (*SX127xSPI, error) {
-	// Open SPI port
+	conn, err := openAndConfigureSPI(spiPort)
+	if err != nil {
+		return nil, err
+	}
+
+	radio := &SX127xSPI{
+		conn:      conn,
+		frequency: 868.1,
+		sf:        10,
+		bandwidth: 125,
+	}
+
+	if err := initializeAndVerifySX127x(radio); err != nil {
+		return nil, err
+	}
+
+	return radio, nil
+}
+
+// openAndConfigureSPI opens and configures the SPI connection.
+func openAndConfigureSPI(spiPort string) (spi.Conn, error) {
 	p, err := spireg.Open(spiPort)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open SPI port %s: %w", spiPort, err)
 	}
 
-	// Configure SPI for SX127x (max 10 MHz, Mode 0)
 	conn, err := p.Connect(10*1000*1000, spi.Mode0, 8)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect SPI: %w", err)
 	}
 
-	radio := &SX127xSPI{
-		conn:      conn,
-		frequency: 868.1, // Default EU frequency
-		sf:        10,
-		bandwidth: 125,
-	}
+	return conn, nil
+}
 
-	// Initialize hardware
+// initializeAndVerifySX127x performs hardware reset, version check, and LoRa mode setup.
+func initializeAndVerifySX127x(radio *SX127xSPI) error {
 	if err := radio.reset(); err != nil {
-		return nil, fmt.Errorf("failed to reset chip: %w", err)
+		return fmt.Errorf("failed to reset chip: %w", err)
 	}
 
-	// Verify chip version
+	if err := verifySX127xChipVersion(radio); err != nil {
+		return err
+	}
+
+	if err := radio.setLoRaMode(); err != nil {
+		return fmt.Errorf("failed to set LoRa mode: %w", err)
+	}
+
+	return nil
+}
+
+// verifySX127xChipVersion reads and validates chip version register.
+func verifySX127xChipVersion(radio *SX127xSPI) error {
 	version, err := radio.readRegister(RegVersion)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read version: %w", err)
+		return fmt.Errorf("failed to read version: %w", err)
 	}
 
-	// Check for known SX127x chip versions
-	switch version {
-	case 0x12: // SX1276
-	case 0x11: // SX1272
-	case 0x22: // SX1277
-	case 0x21: // SX1278
-	case 0x24: // SX1279
-	default:
-		return nil, fmt.Errorf("unknown chip version: 0x%02X (expected SX127x)", version)
+	validVersions := map[byte]bool{
+		0x12: true, // SX1276
+		0x11: true, // SX1272
+		0x22: true, // SX1277
+		0x21: true, // SX1278
+		0x24: true, // SX1279
 	}
 
-	// Configure LoRa mode
-	if err := radio.setLoRaMode(); err != nil {
-		return nil, fmt.Errorf("failed to set LoRa mode: %w", err)
+	if !validVersions[version] {
+		return fmt.Errorf("unknown chip version: 0x%02X (expected SX127x)", version)
 	}
 
-	return radio, nil
+	return nil
 }
 
 // reset performs a hardware reset of the SX127x chip.
@@ -323,7 +347,49 @@ func (r *SX127xSPI) startTransmission() error {
 
 // waitForTxDone polls for transmission completion.
 func (r *SX127xSPI) waitForTxDone(ctx context.Context) error {
-	ticker := time.NewTicker(10 * time.Millisecond)
+	return pollWithTicker(ctx, 10*time.Millisecond, func() (bool, error) {
+		flags, err := r.readRegister(RegIrqFlags)
+		if err != nil {
+			return false, fmt.Errorf("failed to read IRQ flags: %w", err)
+		}
+		if flags&IrqTxDone != 0 {
+			r.writeRegister(RegIrqFlags, 0xFF)
+			r.writeRegister(RegOpMode, ModeStandby|ModeLoRa)
+			return true, nil
+		}
+		return false, nil
+	})
+}
+
+// waitForRxDone polls for receive completion and extracts payload.
+func (r *SX127xSPI) waitForRxDone(ctx context.Context) ([]byte, error) {
+	var result []byte
+	err := pollWithTicker(ctx, 10*time.Millisecond, func() (bool, error) {
+		flags, err := r.readRegister(RegIrqFlags)
+		if err != nil {
+			return false, fmt.Errorf("failed to read IRQ flags: %w", err)
+		}
+		if flags&IrqRxDone != 0 {
+			payload, err := r.extractReceivedPayload(flags)
+			if err != nil {
+				return false, err
+			}
+			result = payload
+			return true, nil
+		}
+		return false, nil
+	})
+
+	if err == context.Canceled || err == context.DeadlineExceeded {
+		r.writeRegister(RegOpMode, ModeStandby|ModeLoRa)
+	}
+
+	return result, err
+}
+
+// pollWithTicker polls a condition function until it returns true or context is done.
+func pollWithTicker(ctx context.Context, interval time.Duration, checkFn func() (bool, error)) error {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -331,14 +397,11 @@ func (r *SX127xSPI) waitForTxDone(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			flags, err := r.readRegister(RegIrqFlags)
+			done, err := checkFn()
 			if err != nil {
-				return fmt.Errorf("failed to read IRQ flags: %w", err)
+				return err
 			}
-
-			if flags&IrqTxDone != 0 {
-				r.writeRegister(RegIrqFlags, 0xFF)
-				r.writeRegister(RegOpMode, ModeStandby|ModeLoRa)
+			if done {
 				return nil
 			}
 		}
@@ -350,7 +413,6 @@ func (r *SX127xSPI) Recv(ctx context.Context) ([]byte, error) {
 	if err := r.enterRxMode(); err != nil {
 		return nil, err
 	}
-
 	return r.waitForRxDone(ctx)
 }
 
@@ -360,29 +422,6 @@ func (r *SX127xSPI) enterRxMode() error {
 		return fmt.Errorf("failed to enter RX mode: %w", err)
 	}
 	return nil
-}
-
-// waitForRxDone polls for receive completion and extracts payload.
-func (r *SX127xSPI) waitForRxDone(ctx context.Context) ([]byte, error) {
-	ticker := time.NewTicker(10 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			r.writeRegister(RegOpMode, ModeStandby|ModeLoRa)
-			return nil, ctx.Err()
-		case <-ticker.C:
-			flags, err := r.readRegister(RegIrqFlags)
-			if err != nil {
-				return nil, fmt.Errorf("failed to read IRQ flags: %w", err)
-			}
-
-			if flags&IrqRxDone != 0 {
-				return r.extractReceivedPayload(flags)
-			}
-		}
-	}
 }
 
 // extractReceivedPayload reads payload from FIFO after RxDone.

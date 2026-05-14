@@ -1,9 +1,9 @@
 ?   	github.com/opd-ai/conspiracy/cmd/conspiracyd	[no test files]
-?   	github.com/opd-ai/conspiracy/internal/autojoin	[no test files]
-ok  	github.com/opd-ai/conspiracy/internal/batman	1.016s
-ok  	github.com/opd-ai/conspiracy/internal/config	1.017s
-ok  	github.com/opd-ai/conspiracy/internal/crypto	1.354s
-ok  	github.com/opd-ai/conspiracy/internal/hint	2.414s
-ok  	github.com/opd-ai/conspiracy/internal/lora	1.018s
-ok  	github.com/opd-ai/conspiracy/internal/metrics	1.238s
-ok  	github.com/opd-ai/conspiracy/internal/wifi	1.017s
+ok  	github.com/opd-ai/conspiracy/internal/autojoin	71.056s
+ok  	github.com/opd-ai/conspiracy/internal/batman	1.029s
+ok  	github.com/opd-ai/conspiracy/internal/config	1.018s
+ok  	github.com/opd-ai/conspiracy/internal/crypto	1.265s
+ok  	github.com/opd-ai/conspiracy/internal/hint	2.413s
+ok  	github.com/opd-ai/conspiracy/internal/lora	1.021s
+ok  	github.com/opd-ai/conspiracy/internal/metrics	1.240s
+ok  	github.com/opd-ai/conspiracy/internal/wifi	1.019s

@@ -19,15 +19,20 @@ import (
 // On embedded devices without hardware RNG, the blocking read may delay
 // startup by 10-30 seconds. This is acceptable for security.
 func EntropyAudit() error {
-	// Step 1: Block until kernel entropy pool is initialized
-	// This ensures crypto/rand has sufficient entropy before first use
+	if err := waitForKernelEntropyPool(); err != nil {
+		return err
+	}
+	return validateCSPRNGOutput()
+}
+
+// waitForKernelEntropyPool blocks until kernel entropy is initialized.
+func waitForKernelEntropyPool() error {
 	f, err := os.Open("/dev/random")
 	if err != nil {
 		return fmt.Errorf("failed to open /dev/random: %w", err)
 	}
 	defer f.Close()
 
-	// Read 32 bytes from /dev/random (may block on first boot)
 	buf := make([]byte, 32)
 	n, err := f.Read(buf)
 	if err != nil {
@@ -37,27 +42,37 @@ func EntropyAudit() error {
 		return fmt.Errorf("short read from /dev/random: got %d bytes, want 32", n)
 	}
 
-	// Step 2: Validate crypto/rand produces varying output
-	sample1 := make([]byte, 32)
-	sample2 := make([]byte, 32)
+	return nil
+}
 
-	if _, err := rand.Read(sample1); err != nil {
+// validateCSPRNGOutput ensures crypto/rand produces varying output.
+func validateCSPRNGOutput() error {
+	sample1, err := generateEntropySample()
+	if err != nil {
 		return fmt.Errorf("crypto/rand first sample failed: %w", err)
 	}
 
-	// Small delay to ensure different output even if CSPRNG is weakly seeded
 	time.Sleep(1 * time.Millisecond)
 
-	if _, err := rand.Read(sample2); err != nil {
+	sample2, err := generateEntropySample()
+	if err != nil {
 		return fmt.Errorf("crypto/rand second sample failed: %w", err)
 	}
 
-	// CRITICAL: Verify samples differ
 	if bytes.Equal(sample1, sample2) {
 		return fmt.Errorf("CRITICAL: crypto/rand entropy failure detected - identical samples generated; aborting to prevent nonce reuse")
 	}
 
 	return nil
+}
+
+// generateEntropySample generates a 32-byte random sample.
+func generateEntropySample() ([]byte, error) {
+	sample := make([]byte, 32)
+	if _, err := rand.Read(sample); err != nil {
+		return nil, err
+	}
+	return sample, nil
 }
 
 // ContinuousEntropyMonitor validates CSPRNG output periodically.

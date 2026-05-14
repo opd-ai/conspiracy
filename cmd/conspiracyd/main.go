@@ -154,17 +154,28 @@ func loraRxLoop(ctx context.Context, radio lora.PacketRadio, ng *crypto.NonceGen
 	defer slog.Info("LoRa RX loop stopped")
 
 	for {
-		select {
-		case <-ctx.Done():
+		if shouldStopRxLoop(ctx) {
 			return
-		default:
-			// Placeholder: receive frames (will be processed by auto-join FSM)
-			_, err := radio.Recv(ctx)
-			if err != nil {
-				// Log receive errors at debug level (expected timeouts)
-				slog.Debug("LoRa receive error", "error", err)
-			}
-			// TODO: Process received frames through auto-join state machine
 		}
+		receiveAndLogFrame(ctx, radio)
 	}
+}
+
+// shouldStopRxLoop checks if context is cancelled.
+func shouldStopRxLoop(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+// receiveAndLogFrame receives a frame and logs receive errors at debug level.
+func receiveAndLogFrame(ctx context.Context, radio lora.PacketRadio) {
+	_, err := radio.Recv(ctx)
+	if err != nil {
+		slog.Debug("LoRa receive error", "error", err)
+	}
+	// TODO: Process received frames through auto-join state machine
 }
