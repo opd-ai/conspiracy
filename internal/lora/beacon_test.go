@@ -430,3 +430,169 @@ func TestBeaconTransmitter_EncryptionIntegrity(t *testing.T) {
 		t.Errorf("Expected Channel = 6, got %d", rxBeacon.Channel)
 	}
 }
+
+// TestBeaconTransmitter_AdaptiveInterval verifies adaptive interval calculation based on peer count
+func TestBeaconTransmitter_AdaptiveInterval(t *testing.T) {
+	meshKey := make([]byte, 32)
+	for i := range meshKey {
+		meshKey[i] = byte(i)
+	}
+
+	rc, err := crypto.NewRebootCounter(t.TempDir() + "/reboot_counter")
+	if err != nil {
+		t.Fatalf("Failed to create reboot counter: %v", err)
+	}
+
+	ng, err := crypto.NewNonceGenerator(meshKey, 0x12345678, rc)
+	if err != nil {
+		t.Fatalf("Failed to create nonce generator: %v", err)
+	}
+
+	radio, err := NewUDPRadio("127.0.0.1:9201", "127.0.0.1:9202")
+	if err != nil {
+		t.Fatalf("Failed to create UDP radio: %v", err)
+	}
+	defer radio.Close()
+
+	payload := &BEACONPayload{
+		Channel:      6,
+		Capabilities: 0x01,
+		Timestamp:    uint32(time.Now().Unix()),
+	}
+	copy(payload.SSID[:], []byte("test-mesh"))
+
+	bt, err := NewBeaconTransmitter(BeaconConfig{
+		Radio:        radio,
+		NonceGen:     ng,
+		MeshKey:      meshKey,
+		NodeID:       0x12345678,
+		Payload:      payload,
+		Interval:     60 * time.Second,
+		DutyCyclePct: 1.0,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create beacon transmitter: %v", err)
+	}
+
+	tests := []struct {
+		name               string
+		peerCount          int
+		expectedInterval   time.Duration
+		expectedMultiplier float64
+	}{
+		{
+			name:               "0 peers",
+			peerCount:          0,
+			expectedInterval:   60 * time.Second,
+			expectedMultiplier: 1.0,
+		},
+		{
+			name:               "100 peers",
+			peerCount:          100,
+			expectedInterval:   120 * time.Second,
+			expectedMultiplier: 2.0,
+		},
+		{
+			name:               "200 peers",
+			peerCount:          200,
+			expectedInterval:   180 * time.Second,
+			expectedMultiplier: 3.0,
+		},
+		{
+			name:               "500 peers",
+			peerCount:          500,
+			expectedInterval:   360 * time.Second,
+			expectedMultiplier: 6.0,
+		},
+		{
+			name:               "1000 peers (capped at 600s)",
+			peerCount:          1000,
+			expectedInterval:   600 * time.Second,
+			expectedMultiplier: 11.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bt.UpdatePeerCount(tt.peerCount)
+
+			interval := bt.GetInterval()
+			if interval != tt.expectedInterval {
+				t.Errorf("Expected interval = %v, got %v", tt.expectedInterval, interval)
+			}
+
+			peerCount := bt.GetPeerCount()
+			if peerCount != tt.peerCount {
+				t.Errorf("Expected peer count = %d, got %d", tt.peerCount, peerCount)
+			}
+		})
+	}
+}
+
+// TestBeaconTransmitter_PeerCountWarning verifies warning log at 100 nodes
+func TestBeaconTransmitter_PeerCountWarning(t *testing.T) {
+	meshKey := make([]byte, 32)
+	for i := range meshKey {
+		meshKey[i] = byte(i)
+	}
+
+	rc, err := crypto.NewRebootCounter(t.TempDir() + "/reboot_counter")
+	if err != nil {
+		t.Fatalf("Failed to create reboot counter: %v", err)
+	}
+
+	ng, err := crypto.NewNonceGenerator(meshKey, 0x12345678, rc)
+	if err != nil {
+		t.Fatalf("Failed to create nonce generator: %v", err)
+	}
+
+	radio, err := NewUDPRadio("127.0.0.1:9301", "127.0.0.1:9302")
+	if err != nil {
+		t.Fatalf("Failed to create UDP radio: %v", err)
+	}
+	defer radio.Close()
+
+	payload := &BEACONPayload{
+		Channel:      6,
+		Capabilities: 0x01,
+		Timestamp:    uint32(time.Now().Unix()),
+	}
+	copy(payload.SSID[:], []byte("test-mesh"))
+
+	bt, err := NewBeaconTransmitter(BeaconConfig{
+		Radio:        radio,
+		NonceGen:     ng,
+		MeshKey:      meshKey,
+		NodeID:       0x12345678,
+		Payload:      payload,
+		Interval:     60 * time.Second,
+		DutyCyclePct: 1.0,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create beacon transmitter: %v", err)
+	}
+
+	// Warning should not be logged yet
+	if bt.peerCountWarn {
+		t.Error("Expected peerCountWarn = false initially")
+	}
+
+	// Update to 50 peers - no warning
+	bt.UpdatePeerCount(50)
+	if bt.peerCountWarn {
+		t.Error("Expected peerCountWarn = false at 50 peers")
+	}
+
+	// Update to 100 peers - warning should be logged
+	bt.UpdatePeerCount(100)
+	if !bt.peerCountWarn {
+		t.Error("Expected peerCountWarn = true at 100 peers")
+	}
+
+	// Update to 150 peers - warning should not be logged again
+	oldWarn := bt.peerCountWarn
+	bt.UpdatePeerCount(150)
+	if bt.peerCountWarn != oldWarn {
+		t.Error("Expected peerCountWarn to remain true (no duplicate warning)")
+	}
+}

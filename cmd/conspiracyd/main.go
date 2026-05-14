@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/opd-ai/conspiracy/internal/batman"
 	"github.com/opd-ai/conspiracy/internal/config"
 	"github.com/opd-ai/conspiracy/internal/crypto"
 	"github.com/opd-ai/conspiracy/internal/lora"
@@ -130,6 +132,12 @@ func runDaemon(cfg *config.Config, radio lora.PacketRadio, ng *crypto.NonceGener
 	handler := newFrameHandler(radio, ng, meshKey, nodeID, cfg)
 	go loraRxLoop(ctx, radio, handler)
 
+	batController := initializeBatmanController(cfg)
+	if batController != nil {
+		defer batController.Close()
+		startBatmanMonitoring(ctx, batController)
+	}
+
 	go func() {
 		slog.Info("Starting metrics server", "addr", ":9090")
 		if err := metrics.StartServer(":9090"); err != nil {
@@ -182,4 +190,56 @@ func receiveAndProcessFrame(ctx context.Context, radio lora.PacketRadio, handler
 	if err := handler.processFrame(ctx, data); err != nil {
 		slog.Debug("Frame processing error", "error", err)
 	}
+}
+
+// initializeBatmanController creates and initializes the batman-adv controller.
+// Returns nil if batman-adv is disabled or initialization fails (fallback mode).
+func initializeBatmanController(cfg *config.Config) *batman.Controller {
+	// Skip if batman-adv is explicitly disabled
+	if !cfg.Batman.Enabled {
+		slog.Info("batman-adv disabled via config")
+		return nil
+	}
+
+	// Use default interface name if not specified
+	batInterface := cfg.Batman.Interface
+	if batInterface == "" {
+		batInterface = "bat0"
+	}
+
+	batController, err := batman.NewController(
+		batInterface,
+		cfg.WiFi.MeshInterface,
+		cfg.Batman.Enabled,
+	)
+	if err != nil {
+		slog.Error("batman-adv controller initialization failed", "error", err)
+		return nil
+	}
+
+	if batController.IsFallbackMode() {
+		slog.Info("batman-adv unavailable; monitoring disabled")
+		return nil
+	}
+
+	return batController
+}
+
+// startBatmanMonitoring starts the batman-adv scale limiter and OGM monitoring.
+func startBatmanMonitoring(ctx context.Context, controller *batman.Controller) {
+	scaleLimiter := batman.NewScaleLimiter(controller, 60*time.Second)
+
+	go func() {
+		slog.Info("Starting batman-adv scale limiter")
+		if err := scaleLimiter.Run(ctx); err != nil && err != context.Canceled {
+			slog.Error("Scale limiter error", "error", err)
+		}
+	}()
+
+	go func() {
+		slog.Info("Starting batman-adv OGM event subscription")
+		if err := controller.SubscribeOGMEvents(ctx); err != nil && err != context.Canceled {
+			slog.Error("OGM subscription error", "error", err)
+		}
+	}()
 }

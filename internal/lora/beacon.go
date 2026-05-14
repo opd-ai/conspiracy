@@ -12,14 +12,17 @@ import (
 
 // BeaconTransmitter manages periodic BEACON frame transmission with duty-cycle enforcement.
 type BeaconTransmitter struct {
-	radio        PacketRadio
-	ng           *crypto.NonceGenerator
-	meshKey      []byte
-	nodeID       uint32
-	payload      *BEACONPayload
-	interval     time.Duration
-	dutyCycleMax time.Duration // Maximum TX time per hour (EU: 36s, US: 144s)
-	txWindow     *DutyCycleWindow
+	radio         PacketRadio
+	ng            *crypto.NonceGenerator
+	meshKey       []byte
+	nodeID        uint32
+	payload       *BEACONPayload
+	interval      time.Duration
+	baseInterval  time.Duration // Base interval (60s), used for adaptive calculation
+	dutyCycleMax  time.Duration // Maximum TX time per hour (EU: 36s, US: 144s)
+	txWindow      *DutyCycleWindow
+	peerCount     int  // Current number of discovered peers
+	peerCountWarn bool // Whether peer count warning has been logged
 }
 
 // BeaconConfig holds configuration for BEACON transmission.
@@ -68,12 +71,15 @@ func NewBeaconTransmitter(cfg BeaconConfig) (*BeaconTransmitter, error) {
 		nodeID:       cfg.NodeID,
 		payload:      cfg.Payload,
 		interval:     cfg.Interval,
+		baseInterval: cfg.Interval,
 		dutyCycleMax: maxTXTime,
 		txWindow: &DutyCycleWindow{
 			maxTXTime:   maxTXTime,
 			txLog:       make([]time.Time, 0, 100),
 			txDurations: make([]time.Duration, 0, 100),
 		},
+		peerCount:     0,
+		peerCountWarn: false,
 	}, nil
 }
 
@@ -169,6 +175,55 @@ func (bt *BeaconTransmitter) transmitBeacon(ctx context.Context) error {
 		"duty_cycle_remaining", bt.txWindow.RemainingTXTime())
 
 	return nil
+}
+
+// UpdatePeerCount updates the peer count and recalculates the adaptive BEACON interval.
+// Formula: interval = baseInterval × (1 + peerCount / 100), capped at 600s (10 min).
+// Example: 0 peers → 60s, 100 peers → 120s, 500 peers → 360s.
+func (bt *BeaconTransmitter) UpdatePeerCount(count int) {
+	bt.peerCount = count
+	bt.calculateAdaptiveInterval()
+}
+
+// calculateAdaptiveInterval computes the BEACON interval based on peer count.
+func (bt *BeaconTransmitter) calculateAdaptiveInterval() {
+	// Formula: interval = baseInterval × (1 + peerCount / 100)
+	multiplier := 1.0 + float64(bt.peerCount)/100.0
+	newInterval := time.Duration(float64(bt.baseInterval) * multiplier)
+
+	// Cap at 600s (10 minutes)
+	const maxInterval = 600 * time.Second
+	if newInterval > maxInterval {
+		newInterval = maxInterval
+	}
+
+	// Log interval changes
+	if newInterval != bt.interval {
+		slog.Info("Adaptive BEACON interval adjusted",
+			"peer_count", bt.peerCount,
+			"old_interval", bt.interval,
+			"new_interval", newInterval,
+			"multiplier", multiplier)
+		bt.interval = newInterval
+	}
+
+	// Warn at 100 nodes about single-frequency capacity
+	if bt.peerCount >= 100 && !bt.peerCountWarn {
+		slog.Warn("Peer count exceeds single-frequency capacity",
+			"peer_count", bt.peerCount,
+			"guidance", "Enable multi-frequency zoning or expect duty-cycle violations")
+		bt.peerCountWarn = true
+	}
+}
+
+// GetPeerCount returns the current peer count.
+func (bt *BeaconTransmitter) GetPeerCount() int {
+	return bt.peerCount
+}
+
+// GetInterval returns the current BEACON transmission interval.
+func (bt *BeaconTransmitter) GetInterval() time.Duration {
+	return bt.interval
 }
 
 // adaptiveBackoff increases BEACON interval when duty-cycle limit is reached.
