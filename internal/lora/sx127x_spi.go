@@ -174,18 +174,18 @@ func (r *SX127xSPI) writeRegister(addr, value byte) error {
 func (r *SX127xSPI) setLoRaMode() error {
 	// Set sleep mode first
 	if err := r.writeRegister(RegOpMode, ModeSleep); err != nil {
-		return err
+		return fmt.Errorf("failed to set sleep mode: %w", err)
 	}
 	time.Sleep(10 * time.Millisecond)
 
 	// Enable LoRa mode
 	if err := r.writeRegister(RegOpMode, ModeSleep|ModeLoRa); err != nil {
-		return err
+		return fmt.Errorf("failed to enable LoRa mode: %w", err)
 	}
 
 	// Set standby mode
 	if err := r.writeRegister(RegOpMode, ModeStandby|ModeLoRa); err != nil {
-		return err
+		return fmt.Errorf("failed to set standby mode: %w", err)
 	}
 
 	return nil
@@ -267,34 +267,34 @@ func (r *SX127xSPI) Send(ctx context.Context, payload []byte) error {
 
 	// Set standby mode
 	if err := r.writeRegister(RegOpMode, ModeStandby|ModeLoRa); err != nil {
-		return err
+		return fmt.Errorf("failed to set standby mode: %w", err)
 	}
 
 	// Set FIFO pointer to TX base
 	if err := r.writeRegister(RegFifoAddrPtr, 0x00); err != nil {
-		return err
+		return fmt.Errorf("failed to set FIFO pointer: %w", err)
 	}
 
 	// Write payload to FIFO
 	for i, b := range payload {
 		if err := r.writeRegister(RegFifo, b); err != nil {
-			return fmt.Errorf("failed to write byte %d: %w", i, err)
+			return fmt.Errorf("failed to write byte %d to FIFO: %w", i, err)
 		}
 	}
 
 	// Set payload length
 	if err := r.writeRegister(RegPayloadLength, byte(len(payload))); err != nil {
-		return err
+		return fmt.Errorf("failed to set payload length: %w", err)
 	}
 
 	// Clear IRQ flags
 	if err := r.writeRegister(RegIrqFlags, 0xFF); err != nil {
-		return err
+		return fmt.Errorf("failed to clear IRQ flags: %w", err)
 	}
 
 	// Enter TX mode
 	if err := r.writeRegister(RegOpMode, ModeTx|ModeLoRa); err != nil {
-		return err
+		return fmt.Errorf("failed to enter TX mode: %w", err)
 	}
 
 	// Wait for TxDone (with context timeout)
@@ -308,7 +308,7 @@ func (r *SX127xSPI) Send(ctx context.Context, payload []byte) error {
 		case <-ticker.C:
 			flags, err := r.readRegister(RegIrqFlags)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to read IRQ flags: %w", err)
 			}
 
 			if flags&IrqTxDone != 0 {
@@ -325,7 +325,7 @@ func (r *SX127xSPI) Send(ctx context.Context, payload []byte) error {
 func (r *SX127xSPI) Recv(ctx context.Context) ([]byte, error) {
 	// Enter RX continuous mode
 	if err := r.writeRegister(RegOpMode, ModeRxContinuous|ModeLoRa); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to enter RX mode: %w", err)
 	}
 
 	// Wait for RxDone
@@ -340,31 +340,31 @@ func (r *SX127xSPI) Recv(ctx context.Context) ([]byte, error) {
 		case <-ticker.C:
 			flags, err := r.readRegister(RegIrqFlags)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("failed to read IRQ flags: %w", err)
 			}
 
 			if flags&IrqRxDone != 0 {
 				// Check CRC
 				if flags&IrqPayloadCrc != 0 {
 					r.writeRegister(RegIrqFlags, 0xFF)
-					return nil, fmt.Errorf("CRC error")
+					return nil, fmt.Errorf("CRC error on received payload")
 				}
 
 				// Read payload length
 				length, err := r.readRegister(RegRxNbBytes)
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("failed to read payload length: %w", err)
 				}
 
 				// Get current RX address
 				addr, err := r.readRegister(RegFifoRxCurrentAddr)
 				if err != nil {
-					return nil, err
+					return nil, fmt.Errorf("failed to read RX FIFO address: %w", err)
 				}
 
 				// Set FIFO pointer
 				if err := r.writeRegister(RegFifoAddrPtr, addr); err != nil {
-					return nil, err
+					return nil, fmt.Errorf("failed to set FIFO pointer to RX address: %w", err)
 				}
 
 				// Read payload
@@ -372,7 +372,7 @@ func (r *SX127xSPI) Recv(ctx context.Context) ([]byte, error) {
 				for i := range payload {
 					payload[i], err = r.readRegister(RegFifo)
 					if err != nil {
-						return nil, err
+						return nil, fmt.Errorf("failed to read byte %d from FIFO: %w", i, err)
 					}
 				}
 

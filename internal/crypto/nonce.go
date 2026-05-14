@@ -32,8 +32,8 @@ import (
 type NonceGenerator struct {
 	meshKey       []byte
 	nodeID        uint32
-	rebootCounter uint32
-	frameSeq      uint32 // atomic counter (16-bit, wraps)
+	rebootCounter *RebootCounter // Reference to reboot counter for automatic wrap recovery
+	frameSeq      uint32         // atomic counter (16-bit, wraps)
 	mu            sync.Mutex
 	validationCtr uint64 // Incremented on each nonce generation for monitoring
 }
@@ -41,16 +41,19 @@ type NonceGenerator struct {
 // NewNonceGenerator creates a nonce generator.
 // meshKey: 32-byte mesh encryption key
 // nodeID: unique node identifier
-// rebootCounter: current reboot counter value
-func NewNonceGenerator(meshKey []byte, nodeID, rebootCounter uint32) (*NonceGenerator, error) {
+// rc: reboot counter instance for automatic frame sequence wrap recovery
+func NewNonceGenerator(meshKey []byte, nodeID uint32, rc *RebootCounter) (*NonceGenerator, error) {
 	if len(meshKey) != 32 {
 		return nil, fmt.Errorf("invalid mesh key length: %d bytes (must be 32)", len(meshKey))
+	}
+	if rc == nil {
+		return nil, fmt.Errorf("reboot counter cannot be nil")
 	}
 
 	return &NonceGenerator{
 		meshKey:       meshKey,
 		nodeID:        nodeID,
-		rebootCounter: rebootCounter,
+		rebootCounter: rc,
 		frameSeq:      0,
 	}, nil
 }
@@ -59,14 +62,38 @@ func NewNonceGenerator(meshKey []byte, nodeID, rebootCounter uint32) (*NonceGene
 //
 // Returns error if:
 //   - crypto/rand fails (entropy exhaustion)
-//   - Frame sequence wraps (65,536 frames per boot cycle)
+//   - Frame sequence wraps AND reboot counter increment fails (disk full, read-only FS)
+//
+// Automatic recovery: When frame sequence exceeds 65,536, the reboot counter is
+// automatically incremented and frame sequence reset to 0. This allows continuous
+// operation without requiring daemon restart.
 func (ng *NonceGenerator) Generate() ([]byte, error) {
 	// Increment frame sequence atomically
 	seq := atomic.AddUint32(&ng.frameSeq, 1)
 
-	// Check for wrap (unlikely in practice, but fatal if it occurs)
+	// Check for wrap - attempt automatic recovery
 	if seq > 0xFFFF {
-		return nil, fmt.Errorf("CRITICAL: Frame sequence exhausted (>65,536 frames in this boot cycle); daemon restart required to prevent nonce reuse")
+		ng.mu.Lock()
+		defer ng.mu.Unlock()
+
+		// Double-check after acquiring lock (another goroutine may have already recovered)
+		currentSeq := atomic.LoadUint32(&ng.frameSeq)
+		if currentSeq > 0xFFFF {
+			// Attempt to increment reboot counter
+			if err := ng.rebootCounter.Increment(); err != nil {
+				return nil, fmt.Errorf("CRITICAL: Frame sequence wrapped but reboot counter increment failed; LoRa subsystem disabled to prevent nonce reuse: %w", err)
+			}
+
+			// Reset frame sequence to 1 (we're using this value for the current nonce)
+			atomic.StoreUint32(&ng.frameSeq, 1)
+			seq = 1
+
+			// Log successful recovery
+			fmt.Printf("INFO: Frame sequence wrapped after 65,536 frames; reboot counter incremented to %d to prevent nonce reuse\n", ng.rebootCounter.Value())
+		} else {
+			// Another goroutine already recovered, use the reset value
+			seq = currentSeq
+		}
 	}
 
 	// Generate 8 bytes of random entropy
@@ -79,7 +106,7 @@ func (ng *NonceGenerator) Generate() ([]byte, error) {
 	// NodeID(4) || RebootCounter(4) || FrameSeq(2) || Random(8)
 	input := make([]byte, 18)
 	binary.BigEndian.PutUint32(input[0:4], ng.nodeID)
-	binary.BigEndian.PutUint32(input[4:8], ng.rebootCounter)
+	binary.BigEndian.PutUint32(input[4:8], ng.rebootCounter.Value())
 	binary.BigEndian.PutUint16(input[8:10], uint16(seq))
 	copy(input[10:18], randomBytes)
 
