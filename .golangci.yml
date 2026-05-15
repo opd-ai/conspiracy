@@ -1,0 +1,67 @@
+run:
+  timeout: 5m
+  tests: true
+  build-tags:
+    - hardware
+
+linters:
+  enable:
+    - errcheck      # Check for unchecked errors
+    - gosimple      # Simplify code
+    - govet         # Go vet
+    - ineffassign   # Detect ineffectual assignments
+    - staticcheck   # Advanced static analysis
+    - unused        # Check for unused code
+    - misspell      # Check for commonly misspelled English words
+    - gofmt         # Check if code is formatted with gofmt
+    - revive        # Fast, configurable, extensible linter
+    - gosec         # Inspect source code for security problems
+    - bodyclose     # Check for unclosed HTTP response bodies
+    - exportloopref # Check for pointers to enclosing loop variables
+    - gocritic      # Comprehensive Go source code linter
+    - noctx         # Find HTTP requests without context
+
+linters-settings:
+  errcheck:
+    check-blank: true
+    check-type-assertions: true
+  
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - performance
+      - style
+  
+  revive:
+    rules:
+      - name: exported
+        severity: warning
+        disabled: false
+      - name: var-naming
+        severity: warning
+        disabled: false
+      - name: indent-error-flow
+        severity: warning
+        disabled: false
+
+issues:
+  exclude-rules:
+    # Exclude some linters from running on tests files
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck
+    # Exclude hardware test files from standard linting
+    - path: _hw_test\.go
+      linters:
+        - gosec
+        - errcheck
+        - revive
+  
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+output:
+  format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true

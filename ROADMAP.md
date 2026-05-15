@@ -272,7 +272,7 @@ Zero automation for builds, tests, linting, or cross-compilation verification:
   - **Validation**: Unit test with invalid configs: wrong frequency, missing mesh_key, non-existent device
   - **Files**: Modify `cmd/conspiracyd/main.go:19-30` (add flag), create `internal/config/validate.go`
 
-- [ ] **Set up CI/CD pipeline** (1 day)
+- [x] **Set up CI/CD pipeline** (1 day)
   - **Action**: Create `.github/workflows/ci.yml` with jobs:
     ```yaml
     - build: go build ./...
