@@ -213,7 +213,7 @@ Zero automation for builds, tests, linting, or cross-compilation verification:
   - **Validation**: Integration test with 10 nodes transmitting simultaneously; measure collision rate <10% with LBT vs >40% without (via packet delivery ratio)
   - **Files**: Modify `internal/lora/sx127x_spi.go:280-320` (add `performLBT()` method), `internal/lora/scheduler.go` (call LBT before `radio.Send()`)
 
-- [ ] **Implement adaptive BEACON intervals** (1 day)
+- [x] **Implement adaptive BEACON intervals** (1 day)
   - **Action**: Modify `internal/lora/beacon.go` interval calculation:
     - Formula: `interval = 60s × (1 + peer_count / 100)` capped at 600s (10 min)
     - Example: 0 peers → 60s, 100 peers → 120s, 500 peers → 360s
