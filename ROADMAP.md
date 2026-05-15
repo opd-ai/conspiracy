@@ -313,7 +313,7 @@ Zero automation for builds, tests, linting, or cross-compilation verification:
 ### Priority 5: Layer-3 Plugin Validation (Deferred to v1.1)
 **Goal**: Validate Yggdrasil and cjdns plugins with production overlay network software. Estimated effort: **4 person-days** (deferred).
 
-- [ ] **Yggdrasil plugin integration testing** (2 days, deferred)
+- [x] **Yggdrasil plugin integration testing** (2 days, deferred)
   - **Action**: Deploy 3-node mesh with Yggdrasil installed:
     1. Verify HintBus publishes RouteAdded hints from batman-adv OGM events
     2. Yggdrasil plugin receives hints, connects to `/var/run/yggdrasil.sock`, sends `addPeer` command
@@ -321,7 +321,7 @@ Zero automation for builds, tests, linting, or cross-compilation verification:
     4. Measure latency from batman-adv OGM detection to Yggdrasil peer addition (<500ms target)
   - **Files**: Create `test/integration/yggdrasil_plugin_test.go`
 
-- [ ] **cjdns plugin integration testing** (2 days, deferred)
+- [x] **cjdns plugin integration testing** (2 days, deferred)
   - **Action**: Deploy 3-node mesh with cjdns installed:
     1. Verify HintBus publishes RouteAdded hints
     2. cjdns plugin sends `IpTunnel_allowConnection` command to cjdns admin interface (UDP 127.0.0.1:11234 bencode protocol)
