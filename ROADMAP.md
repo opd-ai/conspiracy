@@ -288,7 +288,7 @@ Zero automation for builds, tests, linting, or cross-compilation verification:
 ### Priority 4: Scalability and Performance (Deferred to v1.1)
 **Goal**: Support 250+ node deployments via multi-frequency zoning, prevent OGM storms during partition rejoins. Estimated effort: **9 person-days** (deferred).
 
-- [ ] **Complete multi-frequency bridge node implementation** (5 days, deferred)
+- [x] **Complete multi-frequency bridge node implementation** (5 days, deferred)
   - **Current state**: `internal/lora/zoning.go` has zone assignment logic; bridge mode stub incomplete
   - **Action**: Implement bridge node:
     1. Monitor 3 frequencies sequentially (20 sec/frequency = 60 sec cycle)
@@ -298,15 +298,17 @@ Zero automation for builds, tests, linting, or cross-compilation verification:
   - **Hardware validation required**: Verify SX127x can retune frequency in <200ms (datasheet settling time); test with actual hardware before production use
   - **Files**: Modify `internal/lora/zoning.go:80-140`
 
-- [ ] **Extend BEACON wire format for multi-frequency** (2 days, deferred)
+- [x] **Extend BEACON wire format for multi-frequency** (2 days, deferred)
   - **Action**: Add 2-byte extension: 1 byte Frequency (0=868.1, 1=868.3, 2=868.5), 1 byte Flags (bit 0: Forwarded)
   - Protocol version bump to 0x4 (wire-incompatible with v0.3)
   - Rolling upgrade strategy: v0.4 nodes parse v0.3 BEACONs (assume Frequency=0, Forwarded=false)
   - **Files**: Modify `internal/lora/frame.go:28-40`, `internal/lora/beacon.go:25-35`
+  - **Note**: Completed as part of bridge node implementation. Wire format extended with Frequency (uint16) and TTL (uint8) fields. Backward compatibility handled with length checks.
 
-- [ ] **Implement OGM storm mitigation** (2 days, deferred)
+- [x] **Implement OGM storm mitigation** (2 days, deferred)
   - **Action**: Detect partition rejoin (peer count +50% within 10s), temporarily increase OGM burst limit from 20 to 50 for 60s, add per-node random jitter (0-5s) before broadcasting first OGM to new partition
   - **Files**: Create `internal/batman/storm_mitigation.go` (file exists but implementation incomplete)
+  - **Note**: Already fully implemented with comprehensive tests. Token bucket per-originator rate limiting, rejoin mode detection, churn rate tracking, and staggered jitter all functional.
 
 ### Priority 5: Layer-3 Plugin Validation (Deferred to v1.1)
 **Goal**: Validate Yggdrasil and cjdns plugins with production overlay network software. Estimated effort: **4 person-days** (deferred).

@@ -21,8 +21,9 @@ type BeaconTransmitter struct {
 	baseInterval  time.Duration // Base interval (60s), used for adaptive calculation
 	dutyCycleMax  time.Duration // Maximum TX time per hour (EU: 36s, US: 144s)
 	txWindow      *DutyCycleWindow
-	peerCount     int  // Current number of discovered peers
-	peerCountWarn bool // Whether peer count warning has been logged
+	peerCount     int     // Current number of discovered peers
+	peerCountWarn bool    // Whether peer count warning has been logged
+	frequency     float64 // Transmission frequency for multi-frequency zoning
 }
 
 // BeaconConfig holds configuration for BEACON transmission.
@@ -34,6 +35,7 @@ type BeaconConfig struct {
 	Payload      *BEACONPayload
 	Interval     time.Duration // Default: 60s between BEACONs
 	DutyCyclePct float64       // EU: 1.0 (1%), US: 4.0 (4%)
+	Frequency    float64       // Transmission frequency in MHz (e.g., 868.1)
 }
 
 // DutyCycleWindow tracks transmission time within a rolling 1-hour window.
@@ -80,6 +82,7 @@ func NewBeaconTransmitter(cfg BeaconConfig) (*BeaconTransmitter, error) {
 		},
 		peerCount:     0,
 		peerCountWarn: false,
+		frequency:     cfg.Frequency,
 	}, nil
 }
 
@@ -125,6 +128,10 @@ func (bt *BeaconTransmitter) transmitBeacon(ctx context.Context) error {
 
 	// Update BEACON payload timestamp to current time
 	bt.payload.Timestamp = uint32(time.Now().Unix())
+
+	// Set frequency and TTL for multi-frequency zoning
+	bt.payload.Frequency = uint16(bt.frequency * 10) // Convert MHz to frequency × 10 (e.g., 868.1 → 8681)
+	bt.payload.TTL = 2                               // Max TTL for bridge forwarding
 
 	// Marshal BEACON payload (plaintext)
 	plaintext := MarshalBEACONPayload(bt.payload)

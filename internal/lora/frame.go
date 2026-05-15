@@ -35,7 +35,7 @@ type Header struct {
 // HeaderSize is the size of the frame header in bytes
 const HeaderSize = 37
 
-// BEACONPayload represents an encrypted BEACON payload (101 bytes plaintext before encryption)
+// BEACONPayload represents an encrypted BEACON payload (104 bytes plaintext before encryption)
 type BEACONPayload struct {
 	SSID         [32]byte // Mesh SSID (null-padded if <32 bytes)
 	BSSID        [6]byte  // MAC address of mesh interface
@@ -45,10 +45,12 @@ type BEACONPayload struct {
 	GPSLongitude int32
 	Padding      [32]byte // Fixed-length padding for traffic analysis resistance
 	Timestamp    uint32   // Duplicate of Header.Timestamp for anti-precomputation (PoW validation)
+	Frequency    uint16   // Transmission frequency in MHz × 10 (e.g., 8681 = 868.1 MHz)
+	TTL          uint8    // Time-to-live for bridge forwarding (max 2)
 }
 
 // BEACONPayloadSize is the size of the BEACON payload in bytes
-const BEACONPayloadSize = 101
+const BEACONPayloadSize = 104
 
 // JOIN_REQPayload represents a JOIN_REQ frame payload (unencrypted for MVP)
 type JOIN_REQPayload struct {
@@ -142,6 +144,14 @@ func MarshalBEACONPayload(payload *BEACONPayload) []byte {
 
 	// Timestamp (4 bytes)
 	binary.BigEndian.PutUint32(buf[offset:offset+4], payload.Timestamp)
+	offset += 4
+
+	// Frequency (2 bytes)
+	binary.BigEndian.PutUint16(buf[offset:offset+2], payload.Frequency)
+	offset += 2
+
+	// TTL (1 byte)
+	buf[offset] = payload.TTL
 
 	return buf
 }
@@ -185,6 +195,18 @@ func UnmarshalBEACONPayload(data []byte) (*BEACONPayload, error) {
 
 	// Timestamp (4 bytes)
 	payload.Timestamp = binary.BigEndian.Uint32(data[offset : offset+4])
+	offset += 4
+
+	// Frequency (2 bytes)
+	if len(data) >= offset+2 {
+		payload.Frequency = binary.BigEndian.Uint16(data[offset : offset+2])
+		offset += 2
+	}
+
+	// TTL (1 byte)
+	if len(data) >= offset+1 {
+		payload.TTL = data[offset]
+	}
 
 	return payload, nil
 }
