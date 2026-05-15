@@ -14,3 +14,10 @@ type PacketRadio interface {
 	SetBandwidth(khz int) error      // 125, 250, 500
 	RSSI() (int8, error)             // dBm
 }
+
+// LBTRadio extends PacketRadio with Listen Before Talk (LBT) channel activity detection.
+// This is an optional interface; radios that don't support LBT will skip collision avoidance.
+type LBTRadio interface {
+	PacketRadio
+	PerformLBT(ctx context.Context, rssiThreshold int8, maxRetries int) (bool, error)
+}

@@ -195,7 +195,7 @@ Zero automation for builds, tests, linting, or cross-compilation verification:
   - **Validation**: Unit test verifies ToA matches Semtech datasheet tables: 100-byte payload, SF10, BW125 → 370ms (±5ms tolerance)
   - **Files**: Create `internal/lora/toa.go`, `internal/lora/toa_test.go`
 
-- [ ] **Implement TX scheduler with token bucket** (4 days)
+- [x] **Implement TX scheduler with token bucket** (4 days)
   - **Action**: Create `internal/lora/scheduler.go` with:
     1. Token bucket: capacity = 36,000 ms (EU 1%), refill rate = 10 ms/sec
     2. 3-level priority queue: HIGH (JOIN_ACK, JOIN_REQ), MEDIUM (BEACON), LOW (ROUTE_HINT, PING/PONG)
@@ -205,7 +205,7 @@ Zero automation for builds, tests, linting, or cross-compilation verification:
   - **Validation**: Integration test with 100 simulated nodes transmitting 60s BEACONs: measure actual ToA over 1 hour, verify sum <36 seconds (EU 1% limit)
   - **Files**: Create `internal/lora/scheduler.go`, `internal/lora/scheduler_test.go`, modify `cmd/conspiracyd/main.go` to initialize scheduler
 
-- [ ] **Implement LBT (Listen Before Talk) collision avoidance** (2 days)
+- [x] **Implement LBT (Listen Before Talk) collision avoidance** (2 days)
   - **Action**: Before each transmission:
     1. Perform Channel Activity Detection (CAD) via SX127x register `RegOpMode` CAD mode for 5ms
     2. Read RSSI from `RegRssiValue` register; if >-80 dBm (channel busy): defer by random jitter 10-50ms, retry (max 5 attempts)

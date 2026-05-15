@@ -28,6 +28,7 @@ const (
 	RegRxNbBytes         = 0x13
 	RegPktSnrValue       = 0x19
 	RegPktRssiValue      = 0x1A
+	RegRssiValue         = 0x1B // Current RSSI value (used for LBT)
 	RegModemConfig1      = 0x1D
 	RegModemConfig2      = 0x1E
 	RegSymbTimeoutLsb    = 0x1F
@@ -49,14 +50,17 @@ const (
 	ModeFsRx         = 0x04
 	ModeRxContinuous = 0x05
 	ModeRxSingle     = 0x06
+	ModeCAD          = 0x07 // Channel Activity Detection
 	ModeLoRa         = 0x80
 )
 
 // IRQ flags
 const (
-	IrqTxDone     = 0x08
-	IrqRxDone     = 0x40
-	IrqPayloadCrc = 0x20
+	IrqCADDone     = 0x01 // CAD operation completed
+	IrqCADDetected = 0x01 // CAD detected preamble (alternate interpretation)
+	IrqTxDone      = 0x08
+	IrqPayloadCrc  = 0x20
+	IrqRxDone      = 0x40
 )
 
 // SX127xSPI implements PacketRadio for SX127x chipsets via SPI.
@@ -480,9 +484,88 @@ func (r *SX127xSPI) RSSI() (int8, error) {
 	return int8(-157 + int(rssi)), nil
 }
 
+// PerformLBT performs Listen Before Talk (LBT) channel activity detection.
+// Returns true if channel is clear, false if busy after all retries exhausted.
+// Parameters:
+//   - ctx: Context for cancellation
+//   - rssiThreshold: RSSI threshold in dBm (typically -80 dBm; lower = more sensitive)
+//   - maxRetries: Maximum number of retry attempts (typically 5)
+func (r *SX127xSPI) PerformLBT(ctx context.Context, rssiThreshold int8, maxRetries int) (bool, error) {
+	const minJitterMs = 10
+	const maxJitterMs = 50
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Check if channel is clear
+		clear, err := r.isChannelClear(ctx, rssiThreshold)
+		if err != nil {
+			return false, fmt.Errorf("LBT channel check failed: %w", err)
+		}
+
+		if clear {
+			return true, nil
+		}
+
+		// Channel busy - apply random jitter backoff
+		jitter := time.Duration(minJitterMs+randomInt(maxJitterMs-minJitterMs)) * time.Millisecond
+
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(jitter):
+			// Continue to next attempt
+		}
+	}
+
+	// All retries exhausted, channel still busy
+	return false, nil
+}
+
+// isChannelClear performs a single channel activity check using RSSI.
+func (r *SX127xSPI) isChannelClear(ctx context.Context, rssiThreshold int8) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Enter RX mode briefly to measure RSSI
+	if err := r.writeRegister(RegOpMode, ModeRxContinuous|ModeLoRa); err != nil {
+		return false, fmt.Errorf("failed to enter RX mode for LBT: %w", err)
+	}
+
+	// Wait for RSSI measurement to stabilize (5ms per design spec)
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-time.After(5 * time.Millisecond):
+	}
+
+	// Read current RSSI
+	rssi, err := r.readRegister(RegRssiValue)
+	if err != nil {
+		return false, fmt.Errorf("failed to read RSSI for LBT: %w", err)
+	}
+
+	// Convert to dBm (per SX127x datasheet)
+	rssiDBm := int8(-157 + int(rssi))
+
+	// Return to standby mode
+	if err := r.writeRegister(RegOpMode, ModeStandby|ModeLoRa); err != nil {
+		return false, fmt.Errorf("failed to return to standby after LBT: %w", err)
+	}
+
+	// Channel is clear if RSSI is below threshold (weaker signal = less activity)
+	return rssiDBm < rssiThreshold, nil
+}
+
 // Close closes the SPI connection.
 func (r *SX127xSPI) Close() error {
 	// Return to sleep mode
 	r.writeRegister(RegOpMode, ModeSleep)
 	return nil
+}
+
+// randomInt returns a random integer in range [0, max).
+func randomInt(max int) int {
+	if max <= 0 {
+		return 0
+	}
+	return int(time.Now().UnixNano() % int64(max))
 }

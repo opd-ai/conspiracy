@@ -41,6 +41,33 @@ var (
 		},
 		[]string{"consumer"},
 	)
+
+	// LoraTXTotal counts total LoRa transmissions by priority and frame type.
+	LoraTXTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "lora_tx_total",
+			Help: "Total number of LoRa transmissions",
+		},
+		[]string{"priority", "frame_type"},
+	)
+
+	// LoraTXDrops counts dropped transmissions by priority and reason.
+	LoraTXDrops = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "lora_tx_drops_total",
+			Help: "Total number of dropped LoRa transmissions",
+		},
+		[]string{"priority", "reason"},
+	)
+
+	// LoraRXTotal counts total LoRa receptions by frame type.
+	LoraRXTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "lora_rx_total",
+			Help: "Total number of LoRa receptions",
+		},
+		[]string{"frame_type"},
+	)
 )
 
 // StartServer starts the Prometheus metrics HTTP server on the specified address.
