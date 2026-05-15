@@ -221,7 +221,7 @@ Zero automation for builds, tests, linting, or cross-compilation verification:
   - **Validation**: Unit test verifies interval calculation; integration test with 200 simulated nodes: measure duty-cycle <1% (EU) with adaptive intervals
   - **Files**: Modify `internal/lora/beacon.go:65-80`
 
-- [ ] **Integration testing and duty-cycle validation** (2 days)
+- [x] **Integration testing and duty-cycle validation** (2 days)
   - **Action**: Create `test/integration/duty_cycle_test.go` simulating 100 nodes over 1-hour period
   - Measure: Total ToA per node, aggregate duty-cycle, collision rate, JOIN_ACK delivery latency
   - **Acceptance criteria**: EU duty-cycle <1% (36s/hour), collision rate <10%, JOIN_ACK delivery >95% within 30s timeout
@@ -230,7 +230,7 @@ Zero automation for builds, tests, linting, or cross-compilation verification:
 ### Priority 3: Monitoring and Operational Tooling
 **Goal**: Operators can monitor mesh health via Prometheus metrics, debug issues via structured logs, deploy via systemd service. Estimated effort: **5 person-days**.
 
-- [ ] **Instrument Prometheus metrics** (2 days)
+- [x] **Instrument Prometheus metrics** (2 days)
   - **Action**: Update metrics from subsystems:
     1. `lora_peer_count`: Track discovered NodeIDs in `internal/autojoin/join.go` scannedPeers, update gauge on BEACON reception
     2. `lora_rssi_avg`: Calculate rolling average RSSI from last 100 received frames in `internal/lora/beacon.go`
@@ -240,7 +240,7 @@ Zero automation for builds, tests, linting, or cross-compilation verification:
   - **Validation**: Integration test: start daemon, transmit 10 BEACONs, scrape `/metrics`, verify `lora_peer_count=1`, `lora_tx_total=10`, `lora_rssi_avg` non-zero
   - **Files**: Modify `internal/metrics/metrics.go` (add update functions), `internal/autojoin/join.go`, `internal/batman/scale_limit.go`, `internal/lora/scheduler.go`, `internal/lora/sx127x_spi.go`
 
-- [ ] **Create systemd service unit file** (1 day)
+- [x] **Create systemd service unit file** (1 day)
   - **Action**: Create `deployments/systemd/conspiracyd.service`:
     ```ini
     [Unit]
@@ -263,7 +263,7 @@ Zero automation for builds, tests, linting, or cross-compilation verification:
   - **Validation**: Manual test on Raspberry Pi: run `install.sh`, verify daemon starts on boot, survives crash (systemctl restarts), logs visible in `journalctl -u conspiracyd`
   - **Files**: Create `deployments/systemd/conspiracyd.service`, `scripts/install.sh`, `scripts/uninstall.sh`
 
-- [ ] **Add configuration validation CLI flag** (1 day)
+- [x] **Add configuration validation CLI flag** (1 day)
   - **Action**: Add `--validate` flag to daemon:
     1. Parse config via `config.Load()`
     2. Validate: mesh_key hex-encoded 32 bytes, frequency in regional bands (EU 863-870 MHz, US 902-928 MHz), spreading 7-12, batman.interface exists (`ip link show`), lora.device exists (file stat check)

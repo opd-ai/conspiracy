@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opd-ai/conspiracy/internal/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -33,18 +34,11 @@ const (
 // OriginatorTablePath is the path to batman-adv's originator table in sysfs (mutable for testing).
 var OriginatorTablePath = "/sys/kernel/debug/batman_adv/bat0/originators"
 
-var (
-	// Prometheus metrics
-	batmanOriginatorCount = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "batman_originator_count",
-		Help: "Current number of originators in the batman-adv mesh",
-	})
-
-	batmanOGMEmissionEnabled = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "batman_ogm_emission_enabled",
-		Help: "Whether OGM emission is enabled (1) or disabled (0)",
-	})
-)
+// Prometheus metrics for OGM emission state
+var batmanOGMEmissionEnabled = promauto.NewGauge(prometheus.GaugeOpts{
+	Name: "batman_ogm_emission_enabled",
+	Help: "Whether OGM emission is enabled (1) or disabled (0)",
+})
 
 // ScaleLimiter monitors originator count and enforces scale limits.
 type ScaleLimiter struct {
@@ -111,7 +105,7 @@ func (sl *ScaleLimiter) pollOriginatorCount() error {
 	sl.mu.Unlock()
 
 	// Update Prometheus metric
-	batmanOriginatorCount.Set(float64(count))
+	metrics.BatmanOriginatorCount.Set(float64(count))
 
 	// Enforce scale limits
 	sl.enforceScaleLimits(count)

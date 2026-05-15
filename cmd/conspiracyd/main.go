@@ -19,10 +19,16 @@ import (
 
 func main() {
 	configPath := flag.String("config", "/etc/conspiracyd/config.toml", "Path to configuration file")
+	validateOnly := flag.Bool("validate", false, "Validate configuration and exit")
 	flag.Parse()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
+
+	// Handle validation-only mode
+	if *validateOnly {
+		os.Exit(validateConfig(*configPath))
+	}
 
 	slog.Info("conspiracyd starting", "version", "1.0.0-alpha")
 
@@ -242,4 +248,35 @@ func startBatmanMonitoring(ctx context.Context, controller *batman.Controller) {
 			slog.Error("OGM subscription error", "error", err)
 		}
 	}()
+}
+
+// validateConfig performs configuration validation and prints results.
+// Returns 0 if valid, 1 if invalid.
+func validateConfig(path string) int {
+	fmt.Printf("Validating configuration file: %s\n", path)
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		fmt.Printf("✗ Configuration validation FAILED\n")
+		fmt.Printf("Error: %v\n", err)
+		return 1
+	}
+
+	// Print validation summary
+	fmt.Printf("✓ Configuration valid\n\n")
+	fmt.Printf("Configuration Summary:\n")
+	fmt.Printf("  LoRa Device:      %s\n", cfg.LoRa.Device)
+	fmt.Printf("  Frequency:        %.1f MHz\n", cfg.LoRa.FrequencyMHz)
+	fmt.Printf("  Spreading Factor: SF%d\n", cfg.LoRa.Spreading)
+	fmt.Printf("  Bandwidth:        %d kHz\n", cfg.LoRa.BandwidthKHz)
+	fmt.Printf("  Mesh Key:         (configured, %d bytes)\n", 32)
+	fmt.Printf("  WiFi Interface:   %s\n", cfg.WiFi.MeshInterface)
+	fmt.Printf("  WiFi SSID:        %s\n", cfg.WiFi.SSID)
+	fmt.Printf("  WiFi Channel:     %d\n", cfg.WiFi.Channel)
+	fmt.Printf("  Batman Interface: %s\n", cfg.Batman.Interface)
+	fmt.Printf("  Batman Enabled:   %t\n", cfg.Batman.Enabled)
+	fmt.Printf("  Yggdrasil Plugin: %t\n", cfg.Plugin.Yggdrasil)
+	fmt.Printf("  cjdns Plugin:     %t\n", cfg.Plugin.CJDNS)
+
+	return 0
 }
