@@ -98,7 +98,11 @@ func TestBridgeNode_FrequencyCycling(t *testing.T) {
 
 	time.Sleep(300 * time.Millisecond)
 
-	if len(bn.bridgeFreqs) == 0 {
+	bn.bridgeFreqsMu.RLock()
+	freqLen := len(bn.bridgeFreqs)
+	bn.bridgeFreqsMu.RUnlock()
+
+	if freqLen == 0 {
 		t.Error("Bridge frequencies should be populated")
 	}
 }

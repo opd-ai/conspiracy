@@ -23,11 +23,12 @@ type BridgeNode struct {
 	zm            *ZoneManager
 	scheduler     *TXScheduler
 	scanDuration  time.Duration
-	seenFrames    *BloomFilter
-	primaryFreq   float64
-	bridgeFreqs   []float64
-	currentFreqMu sync.RWMutex
-	currentFreq   float64
+	seenFrames      *BloomFilter
+	primaryFreq     float64
+	bridgeFreqsMu   sync.RWMutex
+	bridgeFreqs     []float64
+	currentFreqMu   sync.RWMutex
+	currentFreq     float64
 }
 
 // BridgeConfig holds configuration for bridge node operation.
@@ -101,12 +102,18 @@ func (bn *BridgeNode) updateBridgeFrequencies(frequencies *[]float64) {
 	bridgeFreqs := bn.zm.GetBridgeFrequencies()
 	*frequencies = append([]float64{bn.primaryFreq}, bridgeFreqs...)
 
-	if len(*frequencies) != len(bn.bridgeFreqs)+1 {
+	bn.bridgeFreqsMu.RLock()
+	needsUpdate := len(*frequencies) != len(bn.bridgeFreqs)+1
+	bn.bridgeFreqsMu.RUnlock()
+
+	if needsUpdate {
 		slog.Info("Bridge frequencies updated",
 			"primary", bn.primaryFreq,
 			"bridge_freqs", bridgeFreqs,
 			"total_frequencies", len(*frequencies))
+		bn.bridgeFreqsMu.Lock()
 		bn.bridgeFreqs = bridgeFreqs
+		bn.bridgeFreqsMu.Unlock()
 	}
 }
 
