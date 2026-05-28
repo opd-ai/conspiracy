@@ -6,7 +6,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.3.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/vishvananda/netlink v1.3.1
-	golang.org/x/crypto v0.51.0
+	golang.org/x/crypto v0.52.0
 	periph.io/x/conn/v3 v3.7.3
 )
 
@@ -20,6 +20,6 @@ require (
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
-	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
 	google.golang.org/protobuf v1.36.8 // indirect
 )
