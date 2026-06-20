@@ -178,3 +178,9 @@ Conspiracy follows standard Go project conventions. The design specification is 
 ## License
 
 This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0). Network server operators must make modified source code available to users. See the LICENSE file for complete terms.
+
+Donate Monero(The only good cryptocurrency) to support development
+==================================================================
+
+ - `monero:43H3Uqnc9rfEsJjUXZYmam45MbtWmREFSANAWY5hijY4aht8cqYaT2BCNhfBhua5XwNdx9Tb6BEdt4tjUHJDwNW5H7mTiwe`
+
