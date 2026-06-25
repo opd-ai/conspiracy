@@ -3,7 +3,7 @@ module github.com/opd-ai/conspiracy
 go 1.25.0
 
 require (
-	github.com/pelletier/go-toml/v2 v2.3.1
+	github.com/pelletier/go-toml/v2 v2.4.2
 	github.com/prometheus/client_golang v1.23.2
 	github.com/vishvananda/netlink v1.3.1
 	golang.org/x/crypto v0.51.0
